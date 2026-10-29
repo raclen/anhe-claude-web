@@ -153,6 +153,8 @@ pnpm accept       # 端到端验收（HTTP + SSE 断言，需要能用的 claude
 改协议相关的东西之前，先读 [PROJECT_RULES.md](./PROJECT_RULES.md)——
 那里记着实测出来的协议事实和几条不允许违反的硬边界。
 
+要发布新版本，照 [docs/release.md](./docs/release.md) 的清单走。
+
 ## License
 
 MIT。界面与部分服务端逻辑移植自 pi-web-simple 与 deepseek-harness（均 MIT），
