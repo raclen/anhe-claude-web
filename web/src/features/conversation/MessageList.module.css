@@ -1,0 +1,224 @@
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /*
+   * The transcript already scrolls itself to the bottom on every delta. Browser
+   * scroll anchoring then tries to hold the reader's current element steady
+   * while that same content changes, so the two corrections fight and the
+   * column drifts/lurches during a stream. Following is this component's job.
+   */
+  overflow-anchor: none;
+  /*
+   * No block padding here on purpose. The rail's slot is a zero-height sticky
+   * child, so any padding on the scrollport shifts that slot down by the same
+   * amount and the rail stops being centred in the visible area. The padding
+   * lives on `.column` instead.
+   */
+  /* The rail's preview card sizes itself against the scrollport, and the rail
+     hides itself below 900px where it would overlap the transcript. */
+  container-type: inline-size;
+}
+
+/*
+ * The jump-to-bottom button's slot. The same zero-height sticky trick the rail
+ * uses: sticky to the scrollport's bottom edge, with the disc absolutely placed
+ * inside it. A `position: relative` wrapper around the scrollport would say the
+ * same thing, but it would also re-parent the rail, whose arithmetic is written
+ * against the scrollport itself.
+ */
+.jumpSlot {
+  position: sticky;
+  z-index: 8;
+  bottom: 18px;
+  height: 0;
+  pointer-events: none;
+}
+
+/*
+ * dsh's jump disc: 36px, opaque, the thinnest possible edge and a soft lift.
+ * Opaque because it floats over live text — a translucent disc is unreadable
+ * the moment it covers a code block — and the edge is what keeps it from
+ * melting into a pale one.
+ *
+ * Its right edge is the composer card's right edge rather than a fixed 30px off
+ * the scrollport. The card is 780px wide and centred, with the wrap's 24px
+ * inset taking over once the viewport can no longer fit that, so the disc
+ * tracks the input at every width. The rail stays clear on its own: it only
+ * shows above 900px, where this offset is already past the rail's 30px gutter.
+ */
+.jump {
+  position: absolute;
+  right: max(24px, calc((100% - 780px) / 2));
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 50%;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  box-shadow: var(--dsw-elevation-soft);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 0.15s ease;
+}
+
+.jump:hover {
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.jump:focus-visible {
+  outline: 1.5px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+
+.column {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 20px 24px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/*
+ * One turn = one anchor. The rail jumps to `[data-turn]` elements, and
+ * `turnAtLine` reads them to decide which mark is active, so the row must wrap
+ * the whole exchange rather than each message.
+ */
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.hint {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  text-align: center;
+  padding: 40px 0;
+}
+
+.userTurn {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/*
+ * dsh's user bubble, rule for rule (`MessageItem.module.css`): the brand-tinted
+ * `--dsw-specific-bubble` pill, 22px corners, 10/16 padding, and a 22px line
+ * box. It has no border — the tint is what separates it from the transcript.
+ */
+.userBubble {
+  max-width: 86%;
+  padding: 10px 16px;
+  border-radius: 22px;
+  background: var(--dsw-specific-bubble);
+  /* The bubble is transcript content too, so it follows the size setting. */
+  font-size: var(--dsh-content-font-size, 14px);
+  line-height: calc(22px + var(--dsh-content-font-delta, 0px));
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--dsw-alias-label-primary);
+}
+
+/*
+ * With a picture inside, the bubble trades its 16px side padding for 8px: the
+ * thumbnail is meant to read edge to edge, and text below it keeps the same
+ * visual margin because the bubble is a box the text starts inside of. The
+ * padding is the only thing that changes — the rounding does not, so an
+ * attached image still belongs to the bubble.
+ */
+.userBubble[data-images] {
+  padding: 8px;
+  max-width: min(86%, 420px);
+}
+
+/*
+ * Attachments stack rather than tile. A pasted screenshot is usually full of
+ * text, and two of them side by side would each be too narrow to read at the
+ * size they render here.
+ */
+.userImages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  line-height: 0;
+}
+
+/*
+ * Text that shares the bubble with a picture. It keeps the bubble's old
+ * horizontal inset so the first line still lines up with the message's edge
+ * rather than with the picture's, and it is a block of its own so a picture
+ * below it starts on a new line.
+ */
+.userText {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.userBubble[data-images] .userText {
+  padding: 6px 8px 4px;
+}
+
+/*
+ * A `/command` chip — what a skill call folds down to. Ported from dsh's
+ * `refChip` + `slashChip` pair: inline, 2px of side margin, brand blue, medium
+ * weight, code font. It carries no background of its own; the pill behind it is
+ * the bubble.
+ */
+.skillChip {
+  display: inline;
+  margin: 0 2px;
+  color: var(--dsw-alias-state-business-primary);
+  font-weight: 500;
+  white-space: nowrap;
+  font-family: var(--dsw-font-markdown-code-font-family);
+}
+
+/*
+ * dsh's `refIcon`, the rule its reference chips put on their glyph: `1em` square
+ * so the icon tracks the chip's own font size, a 4px gap before the text, and
+ * the `-.125em` baseline nudge that seats it on the text's optical centre.
+ *
+ * The colour is deliberately absent — the glyph fills with `currentColor`, so it
+ * is the chip's blue by construction and the two can never drift apart.
+ */
+.skillIcon {
+  width: 1em;
+  height: 1em;
+  margin-right: 4px;
+  vertical-align: -0.125em;
+}
+
+.assistantTurn {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/*
+ * Row spacing is dsh's chat flow gap. dsh never sets a `gap` on the column:
+ * every flow item after the first is pushed down by `--dsh-chat-flow-gap`
+ * (16px), which is the same distance between a thinking row, a tool row, and
+ * the answer below them. A flat 2px here left 26px between two 24px rows, so a
+ * turn's thinking and tool calls read as one solid block instead of a list.
+ */
+.assistantTurn > * + * {
+  margin-top: var(--dsh-chat-flow-gap, 16px);
+}
+
+/*
+ * The answer that closes a compacted process window deliberately has no rule
+ * here: it sits on the same 16px rhythm as every other row, which is dsh's own
+ * number for the pair. This used to tighten to 8px, copying a version of dsh
+ * that pulled the answer up under a collapsed group; the current one keeps the
+ * folded and the expanded transcript at the same density, so the
+ * `data-turn-process-answer` flag (see `TurnBody`) now carries semantics rather
+ * than spacing — do not give it a gap.
+ */

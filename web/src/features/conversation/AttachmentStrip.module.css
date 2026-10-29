@@ -1,0 +1,124 @@
+/*
+ * Styles for the attachment strip, its remove discs, the attach button and the
+ * hidden picker. Split out of Composer.module.css when the new-session card
+ * grew the same input — the two must look like one control, and two copies of
+ * these rules is how that stops being true.
+ */
+
+
+/*
+ * The draft strip. It scrolls horizontally rather than wrapping: the strip
+ * lives above the input, and a second row of thumbnails would push the text the
+ * user is typing down the page every time they paste another screenshot.
+ */
+.attachments {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 14px 0;
+  scrollbar-width: thin;
+}
+
+.attachment {
+  position: relative;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  overflow: hidden;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.attachment img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/*
+ * The remove disc rides the thumbnail's corner and is drawn only on hover — at
+ * 64px the picture is the information and the button is the exception. It keeps
+ * a fixed 18px hit area rather than shrinking, so it never becomes hard to hit
+ * on a small thumbnail; `focus-visible` shows it for keyboard users, who never
+ * hover.
+ */
+.remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-mask-3);
+  color: var(--dsw-static-neutral-00);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.attachment:hover .remove,
+.remove:focus-visible {
+  opacity: 1;
+}
+
+.remove svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* The refusal line: same size as the placeholder, in the error tone. */
+.refusal {
+  margin: 0;
+  padding: 6px 14px 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/*
+ * The attach button: dsh's attach circle (figma "+ control") — a 28px selector
+ * disc with the glyph at 14px. A step under the 34px send disc, so the action
+ * stays the biggest thing in the row, and filled rather than bare because the
+ * disc is what makes it one target to hit beside the mode chips.
+ */
+.attach {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-specific-selector);
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+}
+
+.attach:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+/* dsh fades the attach circle to 0.5 rather than the send disc's 0.4: the
+   selector fill is already quiet, and a lighter disc reads as disabled. */
+.attach:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.attach:focus-visible {
+  outline: 1.5px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+/* The picker itself is never drawn; the button above is its visible half. */
+.fileInput {
+  display: none;
+}

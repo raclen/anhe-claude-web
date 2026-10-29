@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+temp/
+.DS_Store
+*.log
+
+# tsc 误编译产物（源码目录里不应有 .js）
+web/src/**/*.js
+web/src/**/*.js.map
+server/src/**/*.js
+server/src/**/*.js.map

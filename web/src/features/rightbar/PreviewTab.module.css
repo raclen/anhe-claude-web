@@ -1,0 +1,216 @@
+.body {
+  padding: 0 0 16px;
+}
+
+/* "The file changed under you", shown above the body rather than inside it:
+ * the content below is still the old one, and the bar is what says so. dsh
+ * draws the same row with the same tokens (secondary label on layer-2, a
+ * hairline under it). */
+.changed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.changedAction {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.changedAction:hover {
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+/* Markdown and plain text get the pane's inset; images and code do not (see
+ * their own rules), because a picture and a scrollport both read better when
+ * they reach the pane's edges. */
+.markdown {
+  padding: 12px 14px 0;
+  font-size: 13px;
+}
+
+.text {
+  margin: 0;
+  padding: 0 14px;
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--dsw-alias-label-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.code {
+  padding: 0;
+}
+
+.imageWrap {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+}
+
+.image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+/* A PDF and a page are drawn by the browser, not by this app, so they take the
+ * pane's whole height and the body does not scroll — the frame scrolls. This
+ * replaces `.scroll` rather than wrapping it: a `height: 100%` frame inside an
+ * `overflow: auto` parent would be as tall as the parent's content, not the
+ * parent, and the frame would never show a scrollbar of its own. */
+.framed {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.frameNotice {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* White, not the theme's own surface: this frame draws somebody else's document,
+ * which is written for a white page. Following the app's dark surface would put
+ * black text on black for any file that does not set a background itself. The
+ * Browser tab's frame makes the same call. */
+.frameWrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+}
+
+.frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* A page seam in a long file: the line range says where the reader is, and the
+ * rule running to the edge says this is a boundary rather than a gap. */
+.pageDivider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 14px 8px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.pageDivider::after {
+  content: "";
+  flex: 1;
+  height: 0;
+  border-top: 0.5px dashed var(--dsw-alias-border-l2);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px 4px;
+}
+
+.pagerButton {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pagerButton:hover:enabled {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.pagerButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pagerCount {
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+}
+
+.centered {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  min-height: 160px;
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.unsupportedName {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.notice {
+  margin: 10px 14px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px solid var(--dsw-alias-border-l3);
+  border-top-color: var(--dsw-alias-label-secondary);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}

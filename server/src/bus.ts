@@ -1,0 +1,111 @@
+import type { NormalizedEvent } from "./agent/normalize.ts";
+
+/**
+ * Everything the browser is told about, over one SSE stream. Session events
+ * arrive at high frequency while a model streams, so the bus stays a plain
+ * synchronous fan-out with no buffering.
+ */
+export type BusEvent =
+  | { type: "session_event"; sessionPath: string; event: NormalizedEvent }
+  | { type: "session_closed"; sessionPath: string; reason: string }
+  | { type: "session_external_changed"; sessionPath: string; modifiedAt: string }
+  | {
+      type: "workspace_changed";
+      projectPath: string;
+      /**
+       * Workspace-relative (`/`-separated) paths that moved, or `null` when the
+       * watcher saw a change it cannot name — a directory-level FSEvents report,
+       * or more paths in one debounce window than it is willing to list.
+       * Consumers compare these against their own workspace-relative targets;
+       * `null` means "treat it as yours".
+       */
+      paths: string[] | null;
+    }
+  | { type: "projects_changed" }
+  | { type: "sessions_changed"; projectPath: string }
+  | { type: "terminal_output"; terminalId: string; sessionPath: string; data: string }
+  | { type: "terminal_state"; terminalId: string; sessionPath: string; exitCode: number }
+  | { type: "terminal_closed"; terminalId: string; sessionPath: string };
+
+export type BusListener = (event: BusEvent) => void;
+
+class EventBus {
+  private readonly listeners = new Set<BusListener>();
+
+  subscribe(listener: BusListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  publish(event: BusEvent): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch {
+        // A broken subscriber (usually a closed SSE socket) must not stop the
+        // others from receiving the event.
+      }
+    }
+  }
+
+  get subscriberCount(): number {
+    return this.listeners.size;
+  }
+}
+
+/**
+ * Session frames only the tab reading that session needs.
+ *
+ * These are the high-frequency incremental ones: one per token, plus pi's
+ * tool-output deltas. They cannot be dropped or merged to save bandwidth —
+ * `message_update` carries the delta rather than a snapshot, so losing one
+ * corrupts the text. This filter never touches them for the session in view;
+ * it only stops them from being fanned out to tabs reading something else.
+ */
+export const STREAM_ONLY_EVENTS: ReadonlySet<string> = new Set([
+  "message_update",
+  "tool_execution_update",
+]);
+
+/**
+ * Whether a stream that is reading `sessionPath` needs this bus event.
+ *
+ * `undefined` means the client has not declared a session yet — it may be an
+ * older client that never will — so it gets everything rather than silently
+ * missing the frames of the session it is about to open. `null` means it is
+ * reading no session: it still needs the low-volume frames every tab shares
+ * (sidebar dots, blocked dialogs, project and session lists), just not any
+ * session's token stream.
+ */
+export function wantsFrame(
+  sessionPath: string | null | undefined,
+  event: BusEvent,
+): boolean {
+  if (sessionPath === undefined) return true;
+  if (event.type !== "session_event") {
+    // Terminal frames are the one non-session event that is *addressed*: a
+    // shell belongs to a session, and a tab reading another one has nothing to
+    // do with its output — which can be a `yes` at full tilt. Everything else
+    // on this branch is shared chrome (sidebar dots, project lists) and goes to
+    // every stream regardless of what it is reading.
+    if (
+      event.type === "terminal_output" ||
+      event.type === "terminal_state" ||
+      event.type === "terminal_closed"
+    ) {
+      return event.sessionPath === sessionPath;
+    }
+    return true;
+  }
+  // 会话改名（新建会话拿到 jsonl 路径）这一条必须送到订阅**旧键**的流上：
+  // 订阅方在那之前只认识 `draft:<项目>`，不发这条它就永远跟不到真实路径。
+  if (event.event.type === "session_renamed") {
+    const previous = (event.event as { previousPath?: unknown }).previousPath;
+    if (previous === sessionPath) return true;
+  }
+  if (event.sessionPath === sessionPath) return true;
+  return !STREAM_ONLY_EVENTS.has(event.event.type);
+}
+
+export const bus = new EventBus();
+export { EventBus };

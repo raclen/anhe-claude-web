@@ -1,0 +1,119 @@
+.page {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  background: var(--dsw-alias-bg-base);
+}
+
+.nav {
+  box-sizing: border-box;
+  flex: none;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 12px;
+  background: var(--dsw-alias-bg-layer-2);
+  border-right: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+/*
+ * macOS: the window is opened with `hiddenInset` (desktop/src/main.cts), so the
+ * traffic lights float over this column's top-left corner — exactly where the
+ * back button is the first thing under them. The page is not a drag row, so
+ * the controls would otherwise sit on top of the button and swallow its
+ * clicks. This step replaces the nav's own 16px top padding with the frame's
+ * published clearance, which puts the whole column below the controls.
+ */
+:global(html[data-platform="darwin"]) .nav {
+  padding-top: var(--dsh-frame-top-clearance);
+}
+
+.back {
+  display: flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px 0 8px;
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.back:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.backArrow {
+  transform: rotate(90deg);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.navList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Cell metrics are dsh's (`SettingsRoot.module.css`): 40px tall, 12px radius. */
+.navCell {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 9px 16px 9px 12px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.navCell:hover {
+  background: var(--dsw-specific-sidebar-nav-item-hover);
+}
+
+.navCellActive {
+  background: var(--dsw-specific-sidebar-nav-item-active);
+}
+
+.navIcon {
+  flex: none;
+}
+
+.navLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.inner {
+  max-width: 748px;
+  margin: 0 auto;
+  padding: 32px 32px 48px;
+}
+
+/*
+ * Every row draws its own hairline, so the last one has to drop it — otherwise
+ * the section ends with a stray separator floating above nothing.
+ */
+.section > :last-child {
+  border-bottom: none;
+}

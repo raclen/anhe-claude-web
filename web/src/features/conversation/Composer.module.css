@@ -1,0 +1,169 @@
+/* No top pad, the way dsh's InputBar drops it too: the room above the card
+ * belongs to the scrolling column that precedes it, not to the composer's own
+ * box. Leaving 8px here stacked on the column's own 8px and read as a white
+ * band between the last line of the transcript and the input. */
+.wrap {
+  flex: 0 0 auto;
+  padding: 0 24px 8px;
+}
+
+/* Mirrors dsh's InputBar card: 22px corners, a 12px gap between the input and
+ * its toolbar, and horizontal padding carried by the children rather than the
+ * card so the text starts at the same offset as the toolbar icons.
+ *
+ * Edge and lift are dsh's elevation pair, verbatim: `border: 0` with the
+ * half-pixel stroke drawn by `--dsw-elevation-soft`, whose first layer is a
+ * `0 0 0 0.5px` ring around the same 22px rounding, followed by two weak halo
+ * passes. The card rebinds `--dsw-elevation-stroke-color` to border-l2 — the
+ * light neutral one step above the menus' l1; the workspace-trigger state is
+ * the one that points it at `transparent`. That rebinding reaches this element
+ * because the derived `--dsw-elevation-*` values are declared per element in
+ * theme/gradient-shadow-text.css rather than inherited already-substituted
+ * from `body`, and `box-sizing: border-box` keeps the outer size unchanged.
+ * The scrollbar pair follows the same reasoning: an elevated surface uses the
+ * l2 thumb. */
+.composer {
+  position: relative;
+  box-sizing: border-box;
+  max-width: 780px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 0;
+  border: 0;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
+  border-radius: 22px;
+  background: var(--dsw-specific-input-major);
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  box-shadow: var(--dsw-elevation-soft);
+  font-size: var(--dsh-content-font-size, 14px);
+  line-height: calc(24px + var(--dsh-content-font-delta, 0px));
+}
+
+/* The textarea and the layer painting it, stacked on one another. The stack is
+ * what gives the absolutely-positioned mirror its box: the textarea keeps
+ * sizing the card, so the mirror never has to measure anything itself. */
+.inputStack {
+  position: relative;
+}
+
+.input {
+  position: relative;
+  width: 100%;
+  min-height: 36px;
+  max-height: 220px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  /* The words are painted by the mirror below; this layer keeps only the caret
+   * and the selection fill. `caret-color` is not affected by a transparent
+   * `color`, which is the whole trick. */
+  color: transparent;
+  /* dsh's caret is the business blue, not the browser default. Its own right pad
+   * is 8px because its scroll container adds a 4px margin on top of it; this
+   * textarea has no such margin, so the right pad carries the full 14px the left
+   * one uses — a wrapped line otherwise runs flush into the card edge. */
+  caret-color: var(--dsw-alias-state-business-primary);
+  padding: 4px 14px 0 14px;
+  /* One wrapping rule for both layers. A textarea breaks a long word by
+   * default but a div does not, and a path is exactly the long word that would
+   * wrap in one layer and not the other. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  box-sizing: border-box;
+  /* The mirror cannot scroll with a scrollbar it does not have: Chrome lays
+   * the two layers out at different widths the moment one of them reserves a
+   * gutter. The textarea is short (220px) and still scrolls by wheel, drag and
+   * keystroke, so the bar is what goes. */
+  scrollbar-width: none;
+}
+
+.input::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* The value underneath is painted in the business blue on a light chip, so a
+ * fully opaque selection fill would hide the very words being selected. */
+.input::selection {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 24%, transparent);
+}
+
+.input::placeholder {
+  color: var(--dsw-alias-label-caption);
+}
+
+/* Same metrics as `.input`, minus the scrolling: this layer never grows past
+ * the textarea it sits behind, it just follows its scrollTop. */
+.inputMirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  font: inherit;
+  color: var(--dsw-alias-label-primary);
+  padding: 4px 14px 0 14px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  box-sizing: border-box;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 8px 6px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* Send and stop are two states of dsh's single `.uV2eYG_primary` disc — the
+ * blue `button-info-fill` one, with a white glyph. The resting state is an
+ * arrow and the running state a 10x10 rounded square, but the surface never
+ * changes, so neither does its color. The white is written as the static token
+ * rather than `#fff`: it is the same value dsh hard-codes, spelled in the
+ * palette this project consumes. */
+.send,
+.stop {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-alias-button-info-fill);
+  color: var(--dsw-static-neutral-00);
+  /* dsh lifts the button by 2px so it optically centres against the 22px
+   * corner of the card. */
+  transform: translateY(-2px);
+  transition: background-color 0.1s;
+  flex: 0 0 auto;
+}
+
+.send:hover:not(:disabled),
+.stop:hover {
+  background: var(--dsw-alias-button-info-hover);
+}
+
+.send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/*
+ * A file drag is over the card. The ring is drawn inside the existing 22px
+ * rounding rather than on a new box, so the card does not move while the file
+ * is in the air — the same reason dsh tints instead of resizing.
+ */
+.composer[data-dragging] {
+  outline: 1.5px dashed var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+}

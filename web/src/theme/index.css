@@ -1,0 +1,211 @@
+/* Theme entry point — token sheets ported verbatim from deepseek-harness
+ * (packages/client/ui-theme/src/styles/). Import order mirrors dsh's cascade:
+ * base variables, static scale + semantic aliases, superellipse corners,
+ * elevation shadows + typography, scrollbars, code highlighting.
+ *
+ * Keep the `--dsw-*` prefix unchanged so this project stays diffable against
+ * the upstream design system. Feature components must consume semantic
+ * aliases (`--dsw-alias-*`) and never literal colors.
+ */
+@import "./base.css";
+@import "./design-platform.css";
+@import "./corner-shape.css";
+@import "./gradient-shadow-text.css";
+@import "./scrollbar.css";
+@import "./shiki.css";
+
+:root {
+  /* In dsh this is written by the theme bootstrap at runtime; every consumer of
+   * it reads the token with a 14px fallback. Pin it so layout does not depend on
+   * a missing runtime value. The settings page writes it as an inline property
+   * on `documentElement`, which outranks this declaration.
+   *
+   * The value is 15, not dsh's own default of 14: this project's schema default
+   * lives in `server/src/store.ts` (`FONT_SIZE_DEFAULT`) and the two must agree,
+   * because this declaration is what paints the first frame — before
+   * `/api/settings` has answered. The `14px` fallbacks left in the component and
+   * typography sheets are dsh originals and stay untouched: they only ever apply
+   * when no token is declared at all, which this block prevents.
+   *
+   * The derived sizes (--dsh-content-font-delta, -secondary, -delta-secondary)
+   * are declared in gradient-shadow-text.css on `body`, where dsh puts them.
+   * They are not repeated here. */
+  --dsh-content-font-size: 15px;
+
+  /* Every dsh elevation token starts with `0 0 0 0.5px`, a hairline stroke
+   * that reads as a border. Floating surfaces (menus, dialogs, toasts) should
+   * separate from the page with shadow alone, so define one without the
+   * stroke here instead of letting each component hard-code a shadow. */
+  --dsw-elevation-float:
+    0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 6px 20px 0 rgba(0, 0, 0, 0.06);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/*
+ * The document is never a scroll container; the shell owns the viewport.
+ *
+ * `.shell` is `overflow: hidden`, but that only *clips* — it does not stop the
+ * window from scrolling. `html`/`body` keep their default `overflow: visible`,
+ * so the document's scroll area is whatever the browser computes from `body`'s
+ * children, and anything that escapes the shell enlarges it: a portal that is
+ * not `position: fixed`, an absolutely positioned box whose containing block
+ * is the initial containing block (no positioned ancestor), or a browser whose
+ * ICB is taller than the visible viewport (mobile chrome with a dynamic URL
+ * bar). When that happens the whole three-column layout slides up and down and
+ * the top of the app can be scrolled out of sight, with no visible cause —
+ * `.shell` looks clipped either way.
+ *
+ * Pinning the root removes the failure mode instead of chasing every escape
+ * hatch. `overscroll-behavior` is the other half: without it a wheel or
+ * trackpad gesture at the end of a pane chains to the document and
+ * rubber-bands the page even when there is nothing to scroll.
+ *
+ * `position: fixed` elements (every overlay portal: floating panels, tab and
+ * row menus, the lightbox, dialogs) are not clipped by this and keep working
+ * outside the frame; they are laid out against the viewport, not against
+ * `body`.
+ */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Belt and braces for the shell's own frame: clip stray absolutely positioned
+ * descendants at the app frame, and give them a containing block inside it so
+ * they cannot enlarge the document. */
+#root {
+  overflow: hidden;
+  position: relative;
+}
+
+body {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/*
+ * macOS desktop: the window is opened with the `sidebar` vibrancy material and
+ * a transparent background (desktop/src/main.cts), and a material only shows
+ * through transparent pixels — `design-platform.css` paints the page ground on
+ * `body`, so it has to be taken back here. The attribute is the one the web
+ * app republishes from the shell bridge (`lib/desktop.ts`); a browser never has
+ * it, so the plain web bundle keeps painting `bg-base` on `body`.
+ *
+ * These rules deliberately come after the token sheets imported above rather
+ * than before: they tie with the sheets' own `body` selectors on specificity,
+ * and the later declaration is the one that wins.
+ */
+html[data-platform="darwin"],
+html[data-platform="darwin"] body {
+  background: transparent;
+}
+
+/*
+ * The constant step below the window's top strip: the traffic lights sit at
+ * y 18–30, and a full-window surface that is not the conversation (the
+ * settings page) pads its leading content by this so it clears them.
+ * deepseek-harness publishes the same number under the same name, and it lives
+ * on the root so anything portalled to `document.body` inherits it too.
+ */
+html[data-platform="darwin"] {
+  --dsh-frame-top-clearance: 48px;
+}
+
+/*
+ * macOS window drag. `hiddenInset` (desktop/src/main.cts) draws the title-bar
+ * band transparent and lets the page run under it, which also gives up the
+ * native bar as a drag surface — so the drag comes from rows the page marks,
+ * exactly as deepseek-harness arranges it: a chrome row carries
+ * `data-window-drag` and its own box is its draggable geometry, so no fixed
+ * band has to match a row's height. Today those rows are the sidebar's top
+ * strip, its brand row, and the top of the centre column (the conversation
+ * header, or the empty row the new-session hero is given in its place).
+ *
+ * Two rules make the marked rows safe to click through:
+ *
+ *  - Every interactive control subtracts itself, so a button sitting inside a
+ *    drag row still receives its own click (Electron composes app-regions from
+ *    geometry, not stacking, so without this the row would win).
+ *  - Anything portalled beside `#root` (the sidebar's row menus, the tab
+ *    menus, the dialogs) is a fixed overlay that covers a drag row; it portals
+ *    to `document.body`, which puts it after every drag row in document order
+ *    and lets one rule take it back out.
+ *
+ * A browser never has the attribute, so none of this is compiled in there.
+ */
+html[data-platform="darwin"] [data-window-drag] {
+  -webkit-app-region: drag;
+}
+
+html[data-platform="darwin"]
+  :is(
+    button,
+    a,
+    input,
+    select,
+    textarea,
+    summary,
+    [contenteditable="true"],
+    [tabindex],
+    [role="dialog"],
+    [role="alertdialog"],
+    [role="menu"],
+    [role="listbox"],
+    [role="tooltip"],
+    [role="button"],
+    [role="link"],
+    [role="tab"],
+    [role="menuitem"],
+    [role="option"],
+    [role="checkbox"],
+    [role="radio"],
+    [role="switch"],
+    [role="combobox"],
+    [role="textbox"]
+  ) {
+  -webkit-app-region: no-drag;
+}
+
+html[data-platform="darwin"] body > :not(#root) {
+  -webkit-app-region: no-drag;
+}
+
+/* Presentation must not carry selection affordances the design system owns. */
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Keyboard focus ring for interactive controls. Text fields are excluded: the
+ * caret already shows focus, and a ring drawn just inside a composer card
+ * reads as a spurious inner border rather than a focus affordance. */
+:focus-visible {
+  outline: 2px solid var(--dsw-alias-link);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+}

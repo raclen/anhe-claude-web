@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>anhe-claude-web</title>
+    <!--
+      The brand mark: `public/pi-mark.png`, the same bitmap the sidebar tile,
+      the new-session hero, and the desktop app icon use. A PNG link rather than
+      the inline SVG that used to sit here — the artwork is a bitmap (a hand-
+      drawn π on black), so there is nothing to vectorize, and one file keeps the
+      browser tab aligned with everything else in the shell. Without any icon
+      link the browser still asks for /favicon.ico and logs a 404 on every load.
+      The tile is dark on purpose: a favicon cannot react to the page, and a dark
+      tile reads correctly on both light and dark browser chrome.
+    -->
+    <link rel="icon" type="image/svg+xml" href="/mark.svg" />
+    <script>
+      //
+      // Resolve the appearance preference before the first paint. The value is
+      // mirrored into localStorage whenever it changes, because the authoritative
+      // copy lives in the server's store file and reading it over HTTP would
+      // arrive a frame too late — long enough to flash a light shell on a dark
+      // display. `/api/settings` reconciles this snapshot once it lands.
+      //
+      (function () {
+        try {
+          var preference = localStorage.getItem("pi-web-simple:appearance") || "system";
+          var dark =
+            preference === "dark" ||
+            (preference === "system" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.dataset.appearance = dark ? "dark" : "light";
+        } catch (error) {
+          // Private mode, disabled storage: fall through to the light default
+          // and let the reconciler in the app set it properly.
+          document.documentElement.dataset.appearance = "light";
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

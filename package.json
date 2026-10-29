@@ -1,0 +1,57 @@
+{
+  "name": "anhe-claude-web",
+  "version": "0.1.0",
+  "description": "Local web UI for the Claude Code CLI you already have installed — streamed chat, tool calls, permission modes, session resume",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "anhe-claude-web": "cli/bin.js"
+  },
+  "files": [
+    "cli",
+    "server/build",
+    "web/dist",
+    "docs",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "SECURITY.md",
+    "PROJECT_RULES.md",
+    "README.md"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "coding-agent",
+    "web",
+    "ui",
+    "local"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anhe-etf/anhe-claude-web.git"
+  },
+  "homepage": "https://github.com/anhe-etf/anhe-claude-web#readme",
+  "bugs": {
+    "url": "https://github.com/anhe-etf/anhe-claude-web/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm -r run build",
+    "start": "node cli/bin.js --no-open",
+    "typecheck": "pnpm -r run typecheck",
+    "accept": "node scripts/accept.mjs",
+    "prepublishOnly": "pnpm typecheck && pnpm build && node scripts/verify-dist.mjs"
+  },
+  "devDependencies": {
+    "ws": "^8.22.0"
+  }
+}

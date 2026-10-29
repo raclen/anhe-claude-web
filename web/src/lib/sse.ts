@@ -1,0 +1,180 @@
+import { actions, appStore, streamRestored, workspaceChanged } from "./app-state.ts";
+// The one upward import in `lib/`: shell frames have to be fanned out at the
+// single point that demultiplexes the stream, and the fan-out lives with the
+// rest of the terminal state. It is a leaf (api + store + types), so this does
+// not close a cycle.
+import { emitTerminalOutput, terminalActions } from "../features/rightbar/terminal-state.ts";
+import type { BusEvent, ExtensionUiRequest } from "./types.ts";
+
+/**
+ * The id the server handed this connection in `hello`; null before it arrives
+ * and after the stream closes. It is how a subscription update names a stream.
+ */
+let connectionId: string | null = null;
+
+/**
+ * The session this tab is reading, kept across reconnects.
+ *
+ * `undefined` means the page has not decided yet. The server treats that (and
+ * every connection before its first subscription) as "send everything", so a
+ * late decision costs bandwidth, never frames.
+ */
+let wantedSession: string | null | undefined = undefined;
+
+/** False until a connection opens, so a reconnect can be told from the first. */
+let opened = false;
+
+/**
+ * Tell the server which session this tab is reading.
+ *
+ * Called on every session change from the shell. Fire-and-forget: until it
+ * lands the server still sends every frame, so nothing is lost if it fails.
+ */
+export function setEventSession(sessionPath: string | null): void {
+  wantedSession = sessionPath;
+  void pushSubscription();
+}
+
+async function pushSubscription(): Promise<void> {
+  if (connectionId === null || wantedSession === undefined) return;
+  try {
+    await fetch("/api/events/subscription", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ connectionId, sessionPath: wantedSession }),
+    });
+  } catch {
+    // A failed update only leaves the server fanning out everything. The next
+    // session switch tries again.
+  }
+}
+
+function parse<T>(raw: Event): T | null {
+  const data = (raw as MessageEvent).data;
+  if (typeof data !== "string" || data.length === 0) return null;
+  try {
+    return JSON.parse(data) as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Subscribes to the server's SSE stream and folds it into app state.
+ * `EventSource` reconnects on its own; `onopen` re-syncs after an outage.
+ */
+export function connectEvents(): () => void {
+  // Each connection gets its own id and first-open state; the declared session
+  // outlives a reconnect, so it is deliberately not reset here.
+  connectionId = null;
+  opened = false;
+  const source = new EventSource("/api/events");
+
+  source.addEventListener("open", () => {
+    void actions.refreshProjects();
+    const selected = appStore.get().selectedProjectId;
+    if (selected) void actions.refreshSessions(selected, { force: true });
+    // The stream dropped and came back: frames were missed while it was away.
+    // Tell whoever is reading to re-read instead of appending past the hole.
+    if (opened) streamRestored.emit();
+    opened = true;
+  });
+
+  source.addEventListener("hello", (raw) => {
+    const data = parse<{ connectionId?: string; activeSessions: string[] }>(raw);
+    if (!data) return;
+    // A reconnect may find processes that died while the stream was down; the
+    // run marks they left behind are retired against this fresh list.
+    actions.reconcileActiveSessions(data.activeSessions);
+    connectionId = typeof data.connectionId === "string" ? data.connectionId : null;
+    // A reconnect learns a fresh id, so the current session has to be declared
+    // again for the new stream.
+    void pushSubscription();
+  });
+
+  source.addEventListener("projects_changed", () => {
+    void actions.refreshProjects();
+  });
+
+  source.addEventListener("sessions_changed", (raw) => {
+    const data = parse<Extract<BusEvent, { type: "sessions_changed" }>>(raw);
+    const state = appStore.get();
+    const projectId = data?.projectPath
+      ? state.projects.find((project) => project.path === data.projectPath)?.id
+      : state.selectedProjectId;
+    if (projectId) void actions.refreshSessions(projectId, { force: true });
+  });
+
+  source.addEventListener("session_event", (raw) => {
+    const data = parse<Extract<BusEvent, { type: "session_event" }>>(raw);
+    if (!data) return;
+    // 新建会话拿到 jsonl 路径后，服务端会把旧键（`draft:<项目>`）换成真实路径。
+    // 必须在转发事件**之前**处理：订阅是按路径过滤的，路径不换就再也收不到。
+    if (data.event.type === "session_renamed") {
+      const renamed = data.event as unknown as { previousPath?: unknown; sessionPath?: unknown };
+      if (typeof renamed.previousPath === "string" && typeof renamed.sessionPath === "string") {
+        actions.renameSessionPath(renamed.previousPath, renamed.sessionPath);
+      }
+    }
+
+    actions.emitSessionEvent(data.sessionPath, data.event);
+
+    // pi extensions can block on a dialog; surface it or the run stalls.
+    if (data.event.type === "extension_ui_request") {
+      const request = data.event as unknown as ExtensionUiRequest;
+      if (request.method === "notify") {
+        const text = typeof request.message === "string" ? request.message : "";
+        if (text.length > 0) actions.setNotice(text);
+      } else if (["confirm", "select", "input", "editor"].includes(request.method)) {
+        actions.enqueueUiRequest({ sessionPath: data.sessionPath, request });
+      }
+    }
+  });
+
+  source.addEventListener("session_closed", (raw) => {
+    const data = parse<Extract<BusEvent, { type: "session_closed" }>>(raw);
+    if (!data) return;
+    actions.setActiveSessions(appStore.get().activeSessions.filter((p) => p !== data.sessionPath));
+    // A process torn down mid-run never settles, so its running mark would
+    // animate forever. The session going away clears it.
+    actions.clearSessionActivity(data.sessionPath);
+    // A session that never got a first reply has no file, so it is gone for
+    // good; its provisional row must go with it.
+    actions.forgetUnsavedSession(data.sessionPath);
+  });
+
+  source.addEventListener("session_external_changed", (raw) => {
+    const data = parse<Extract<BusEvent, { type: "session_external_changed" }>>(raw);
+    if (data) actions.markExternalChanged(data.sessionPath);
+  });
+
+  // Shell output goes straight to whichever terminal is watching that id. It
+  // deliberately does not touch React state — see `terminal-state.ts`.
+  source.addEventListener("terminal_output", (raw) => {
+    const data = parse<Extract<BusEvent, { type: "terminal_output" }>>(raw);
+    if (data) emitTerminalOutput(data.terminalId, data.data);
+  });
+
+  // Exit after output, always: the server flushes buffered frames before it
+  // announces the code, so a shell that printed on its way out has its last
+  // line on screen when the notice appears.
+  source.addEventListener("terminal_state", (raw) => {
+    const data = parse<Extract<BusEvent, { type: "terminal_state" }>>(raw);
+    if (data) terminalActions.noteExit(data.terminalId, data.exitCode);
+  });
+
+  source.addEventListener("terminal_closed", (raw) => {
+    const data = parse<Extract<BusEvent, { type: "terminal_closed" }>>(raw);
+    if (data) terminalActions.forget(data.terminalId);
+  });
+
+  source.addEventListener("workspace_changed", (raw) => {
+    const data = parse<Extract<BusEvent, { type: "workspace_changed" }>>(raw);
+    if (data) workspaceChanged.emit({ projectPath: data.projectPath, paths: data.paths ?? null });
+  });
+
+  return () => {
+    source.close();
+    connectionId = null;
+  };
+}

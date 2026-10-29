@@ -1,0 +1,1419 @@
+import { useMemo } from "react";
+import { api } from "./api.ts";
+import { resolveLanguage, translator, type Translate, type UiLanguage } from "./i18n/index.ts";
+import { showNotification } from "./notifications.ts";
+import { buildProjectTree, flattenProjectTree } from "./project-tree.ts";
+import {
+  loadSidebarView,
+  moveInOrder,
+  moveWorkspace,
+  saveSidebarView,
+  type SessionGroupBy,
+  type SessionOrderBy,
+  type SidebarView,
+} from "./sidebar-view.ts";
+import { createEmitter, createStore, useStoreSelector, type Emitter, type Store } from "./store.ts";
+import { applyAppearance, applyContentFontSize, watchSystemAppearance } from "./theme.ts";
+import type {
+  AgentSettings,
+  ComposerModel,
+  ExtensionsView,
+  ImageBlock,
+  McpProbeResult,
+  McpServerDraft,
+  McpView,
+  ModelsView,
+  PendingUiDialog,
+  ProviderInput,
+  SessionEvent,
+  ProjectView,
+  SessionView,
+  SlashCommand,
+  UpdatesView,
+  WebSettings,
+} from "./types.ts";
+
+/**
+ * Mirrors the server's defaults so a slow `/api/settings` is invisible: the
+ * first paint already uses these, and the fetch only ever confirms them.
+ * Keep in step with `server/src/store.ts`.
+ */
+const DEFAULT_SETTINGS: WebSettings = {
+  appearance: "system",
+  language: "system",
+  contentFontSize: 15,
+  transcriptDisplay: "standard",
+  busySendBehavior: "queue",
+  browserNotifications: false,
+  // Titles stay deterministic until someone opts in and names a model.
+  titleModel: null,
+};
+
+/** A blocking extension dialog waiting on the user. */
+export type PendingUiRequest = PendingUiDialog;
+
+/**
+ * Marks a session that only exists in the browser so far.
+ *
+ * Spawning a pi process takes ~1.6s, so the UI adopts a draft immediately and
+ * lets the real session arrive in the background.
+ */
+export const DRAFT_PREFIX = "draft:";
+
+/**
+ * How many sessions a workspace shows before folding the rest behind "show
+ * more" — dsh's five. This is the page the sidebar asks the server for, so the
+ * two have to agree (see `refreshSessions`).
+ */
+export const SESSIONS_PAGE_SIZE = 5;
+
+export function isDraftSession(sessionPath: string | null): boolean {
+  return typeof sessionPath === "string" && sessionPath.startsWith(DRAFT_PREFIX);
+}
+
+/**
+ * Swap one path for another (or drop it) in one workspace's unsaved list.
+ *
+ * Returns the same map when nothing matched, so a draft that was already
+ * retired does not invalidate every subscriber for no reason.
+ */
+function replacePath(
+  unsaved: Record<string, string[]>,
+  projectId: string,
+  from: string,
+  to: string | null,
+): Record<string, string[]> {
+  const paths = unsaved[projectId];
+  const index = paths?.indexOf(from) ?? -1;
+  if (paths === undefined || index < 0) return unsaved;
+  const next = [...paths];
+  if (to === null) next.splice(index, 1);
+  else next[index] = to;
+  return { ...unsaved, [projectId]: next };
+}
+
+/** A message typed while the session was still being created. */
+export interface PendingPrompt {
+  sessionPath: string;
+  text: string;
+  mode: "prompt" | "steer" | "followUp";
+  /** Pictures pasted while the draft was open. They are part of the message. */
+  images?: ImageBlock[];
+}
+
+export interface AppState {
+  status: "loading" | "ready" | "error";
+  error: string | null;
+  /** Transient, dismissible message (e.g. a failed action). */
+  notice: string | null;
+  projects: ProjectView[];
+  selectedProjectId: string | null;
+  /** Sessions per project id; a missing key means "not loaded yet". */
+  sessions: Record<string, SessionView[]>;
+  /**
+   * How many visible sessions each project has, as the server counts them.
+   *
+   * `sessions` holds only the page the sidebar has fetched, so the total is
+   * what labels "show more" with the number of rows still folded away.
+   */
+  sessionTotals: Record<string, number>;
+  selectedSessionPath: string | null;
+  /**
+   * Session paths this browser created that pi has not written to disk yet,
+   * keyed by the workspace that owns them and newest first.
+   *
+   * pi only creates the JSONL once the first assistant reply lands, so a new
+   * session has a real path but no file for as long as its first turn runs.
+   * The session list is disk-derived and cannot show it, so without this record
+   * a running session would be visible only while it happens to be the open
+   * conversation — switching away or starting another one would drop its row
+   * out of the sidebar entirely.
+   *
+   * Which workspace a path belongs to cannot be inferred on the client: pi
+   * encodes the cwd into the session directory with a private scheme the server
+   * already has to mirror, so ownership is recorded here at creation time.
+   */
+  unsavedSessions: Record<string, string[]>;
+  /** Session files with a live pi process on the server. */
+  activeSessions: string[];
+  /**
+   * Live agent activity per session path, for the sidebar's status mark.
+   *
+   * `"ongoing"` while a session's agent loop is running; `"done"` once it
+   * settles out of view — dsh's "completed" reminder, which opening the
+   * session clears. A path with no entry reads as idle. Keyed by the real
+   * session path, so a draft's mark moves when its file lands.
+   */
+  sessionActivity: Record<string, "ongoing" | "done">;
+  /** Sessions another process appended to while we held them. */
+  externalChanged: Record<string, true>;
+  /**
+   * Extension dialogs awaiting an answer, oldest first; each blocks its own pi
+   * process until answered. A queue rather than a single slot because two open
+   * sessions can be blocked at once — a later request must not erase an earlier
+   * one the user has not seen yet.
+   */
+  pendingUiRequests: PendingUiRequest[];
+  /** Text submitted before its session finished spawning. */
+  pendingPrompt: PendingPrompt | null;
+  /**
+   * The model the next new session starts on, chosen on the hero before that
+   * session exists. Null means "whatever pi starts on", which is also the state
+   * a fresh app is in — so this is deliberately not persisted anywhere.
+   */
+  newSessionModel: ComposerModel | null;
+  /** Projects whose session list is expanded in the sidebar. */
+  expandedProjects: Record<string, true>;
+  /** Extra session rows revealed per project beyond the default page. */
+  revealedSessions: Record<string, number>;
+  /** Sidebar filter across project titles and session titles. */
+  sessionQuery: string;
+  searchOpen: boolean;
+  /**
+   * How the sidebar groups what it draws, how it orders the rows, and the
+   * manual order each account was left in.
+   *
+   * Cached in `localStorage` rather than on the server: this is a property of
+   * one browser's sidebar, not of the workspaces themselves — dsh keeps the
+   * same state in its own persisted store, and the shape here is a copy of it
+   * (see `sidebar-view.ts`).
+   */
+  sidebarView: SidebarView;
+  /** Slash commands per project id, as reported by a running pi process. */
+  commands: Record<string, SlashCommand[]>;
+  /** Host home directory; empty until known, which just leaves paths absolute. */
+  home: string;
+  /** UI preferences, owned by this app. */
+  settings: WebSettings;
+  /** Agent behaviour per project path; a missing key means "not fetched yet". */
+  agentSettings: Record<string, AgentSettings>;
+  /** True while the settings page replaces the conversation view. */
+  settingsOpen: boolean;
+  /**
+   * Model providers, read from pi's `models.json`/`auth.json` by the server.
+   * `null` means not loaded yet — the page shows nothing rather than an empty
+   * state that reads as "you have no providers".
+   */
+  models: ModelsView | null;
+  /**
+   * Extension inventory for the workspace the page last asked about. `null`
+   * means not loaded yet, same reasoning as `models`.
+   */
+  extensions: ExtensionsView | null;
+  /**
+   * MCP inventory for the workspace the page last asked about.
+   */
+  mcp: McpView | null;
+  /**
+   * Update notices, keyed by workspace path (empty string = user scope).
+   *
+   * Keyed rather than singular because two different questions are asked at
+   * once: the settings and plugins pages resolve the *selected project* (a
+   * project-local package can be behind while the global ones are current),
+   * while the sidebar badge reads the user-scope answer loaded at bootstrap.
+   * A single slot would let one overwrite the other.
+   */
+  updates: Record<string, UpdatesView>;
+}
+
+const initialState: AppState = {
+  status: "loading",
+  error: null,
+  notice: null,
+  projects: [],
+  selectedProjectId: null,
+  sessions: {},
+  sessionTotals: {},
+  selectedSessionPath: null,
+  unsavedSessions: {},
+  activeSessions: [],
+  sessionActivity: {},
+  externalChanged: {},
+  pendingUiRequests: [],
+  pendingPrompt: null,
+  newSessionModel: null,
+  expandedProjects: {},
+  revealedSessions: {},
+  sessionQuery: "",
+  searchOpen: false,
+  sidebarView: loadSidebarView(),
+  commands: {},
+  home: "",
+  settings: DEFAULT_SETTINGS,
+  agentSettings: {},
+  settingsOpen: false,
+  models: null,
+  extensions: null,
+  mcp: null,
+  updates: {},
+};
+
+/** In-flight spawn for the draft the user is currently looking at. */
+let draftRequest: Promise<string | null> | null = null;
+
+/** In-flight command listings per project id, so rapid switching asks once. */
+const commandsRequests = new Map<string, Promise<void>>();
+
+/**
+ * The newest session-list request per project id.
+ *
+ * The answer that arrives last is not necessarily the newest one — "show more"
+ * can be clicked twice before either reply lands — so a late answer for an
+ * older page is dropped rather than put back on screen.
+ */
+const sessionRequests = new Map<string, number>();
+
+export const appStore: Store<AppState> = createStore(initialState);
+
+/**
+ * The `t()` for whichever language the current settings resolve to.
+ *
+ * Reading through the store instead of caching one translator at module load is
+ * what makes a language switch repaint: every component that renders copy
+ * subscribes, so it re-renders exactly like it does for an appearance change.
+ */
+/**
+ * The translator for the language in effect right now.
+ *
+ * Actions compose user-facing notices outside React, so they cannot call a
+ * hook; reading the store at call time is what keeps a notice written in the
+ * language the user is actually looking at.
+ */
+function tr(): Translate {
+  return translator(resolveLanguage(appStore.get().settings.language));
+}
+
+/**
+ * The title of a session, wherever its project happens to be listed.
+ *
+ * Titles live in the per-project session lists while a settle event only names
+ * a path, so this is the one lookup a completion notice needs. A missing title
+ * is not an error: a session that just settled is by definition in the list, but
+ * a not-yet-loaded project would otherwise turn a notice into a crash.
+ */
+function findSessionTitle(state: AppState, sessionPath: string): string | null {
+  for (const sessions of Object.values(state.sessions)) {
+    for (const session of sessions) {
+      if (session.path === sessionPath) return session.title;
+    }
+  }
+  return null;
+}
+
+export function useT(): Translate {
+  const preference = useStoreSelector(appStore, (state) => state.settings.language);
+  return useMemo(() => translator(resolveLanguage(preference)), [preference]);
+}
+
+/**
+ * The language the settings currently resolve to, for the few labels that need
+ * a format rather than a message (a date reading `9月17日` or `Sep 17`).
+ */
+export function useLanguage(): UiLanguage {
+  return resolveLanguage(useStoreSelector(appStore, (state) => state.settings.language));
+}
+
+/** High-frequency session events, delivered outside React state. */
+export const sessionEvents: Emitter<{ sessionPath: string; event: SessionEvent }> =
+  createEmitter();
+
+/**
+ * Fires when the event stream reconnects after a drop.
+ *
+ * A dropped socket means the transcript missed frames while it was away, and
+ * stream deltas cannot be recovered from the next one — the frames carry the
+ * delta, not a snapshot. Whoever is reading has to re-read the snapshot rather
+ * than keep appending to a stream with a hole in it.
+ */
+export const streamRestored: Emitter<void> = createEmitter();
+
+/**
+ * Reports that files under a project's working tree changed outside this app.
+ *
+ * The changes panel listens so it can follow an editor save, a formatter, or a
+ * terminal `git` command without a manual refresh; a Preview tab listens so an
+ * open file follows the same edits. `paths` names what moved, workspace-
+ * relative, or is `null` when the watcher could not attribute the change.
+ */
+export const workspaceChanged: Emitter<{
+  projectPath: string;
+  paths: string[] | null;
+}> = createEmitter();
+
+/** Test seam: restore the initial state. */
+export function resetAppState(): void {
+  appStore.set({ ...initialState });
+  draftRequest = null;
+  commandsRequests.clear();
+  sessionRequests.clear();
+}
+
+export const actions = {
+  async bootstrap(): Promise<void> {
+    appStore.update((state) => ({ ...state, status: "loading", error: null }));
+    // Fire-and-forget: this only affects how paths are displayed, so it must
+    // never hold up first paint, and a failure just means paths stay absolute.
+    void api
+      .env()
+      .then((env) => appStore.update((state) => ({ ...state, home: env.home })))
+      .catch(() => undefined);
+    // Same reasoning: the shell already painted with defaults that match the
+    // server's, so preferences reconcile in place instead of gating the view.
+    void actions.loadSettings();
+    // Fire-and-forget too: this only decides whether the settings entry shows
+    // an update dot, and nothing on first paint should wait on the network.
+    void actions.loadUpdates(null);
+    // Dialogs opened before this page loaded are still pending server-side, and
+    // the SSE stream carries no history — without this they would never be
+    // rendered, and their pi processes would wait on nobody.
+    void actions.loadPendingUiRequests();
+    try {
+      const projects = await api.listProjects();
+      appStore.update((state) => ({ ...state, projects, status: "ready" }));
+      const first = projects[0];
+      if (first) {
+        await actions.selectProject(first.id);
+        actions.expandProject(first.id);
+      }
+    } catch (err) {
+      appStore.update((state) => ({
+        ...state,
+        status: "error",
+        error: (err as Error).message,
+      }));
+    }
+  },
+
+  // --- settings -------------------------------------------------------------
+
+  /** Apply UI preferences once the server confirms them. */
+  async loadSettings(): Promise<void> {
+    try {
+      const settings = await api.getSettings();
+      appStore.update((state) => ({ ...state, settings }));
+      applyAppearance(settings.appearance);
+      applyContentFontSize(settings.contentFontSize);
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * Persist UI preferences. The shell is updated before the request so the
+   * control and its effect move together — these rows exist to change how the
+   * app looks right now, and a round trip of delay reads as "nothing happened".
+   */
+  async updateSettings(patch: Partial<WebSettings>): Promise<void> {
+    const previous = appStore.get().settings;
+    const optimistic = { ...previous, ...patch };
+    appStore.update((state) => ({ ...state, settings: optimistic }));
+    applyAppearance(optimistic.appearance);
+    applyContentFontSize(optimistic.contentFontSize);
+    try {
+      const settings = await api.updateSettings(patch);
+      appStore.update((state) => ({ ...state, settings }));
+      applyAppearance(settings.appearance);
+      applyContentFontSize(settings.contentFontSize);
+    } catch (err) {
+      // Roll back: a rejected write must not leave the shell claiming a value
+      // the server never stored.
+      appStore.update((state) => ({ ...state, settings: previous }));
+      applyAppearance(previous.appearance);
+      applyContentFontSize(previous.contentFontSize);
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * Read agent behaviour from a live pi process. Resolves to `available: false`
+   * rather than failing when no process can be reached.
+   */
+  async loadAgentSettings(projectPath: string): Promise<void> {
+    try {
+      const settings = await api.getAgentSettings(projectPath);
+      appStore.update((state) => ({
+        ...state,
+        agentSettings: { ...state.agentSettings, [projectPath]: settings },
+      }));
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  async updateAgentSettings(
+    projectPath: string,
+    patch: { autoCompaction?: boolean },
+  ): Promise<void> {
+    try {
+      const settings = await api.updateAgentSettings(projectPath, patch);
+      appStore.update((state) => ({
+        ...state,
+        agentSettings: { ...state.agentSettings, [projectPath]: settings },
+      }));
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  openSettings(): void {
+    appStore.update((state) => ({ ...state, settingsOpen: true }));
+  },
+
+  closeSettings(): void {
+    appStore.update((state) => ({ ...state, settingsOpen: false }));
+  },
+
+  /**
+   * Load provider config. Every write below answers with the same payload, so
+   * this page never holds a partially-updated list.
+   */
+  async loadModels(): Promise<void> {
+    try {
+      const models = await api.getModels();
+      appStore.update((state) => ({ ...state, models }));
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * The three writes below rethrow instead of routing through `setNotice`:
+   * they run from a dialog that must stay open and show the reason inline when
+   * a save is rejected, and a banner behind the dialog would be missed.
+   */
+  async createProvider(input: ProviderInput): Promise<void> {
+    const models = await api.createProvider(input);
+    appStore.update((state) => ({ ...state, models }));
+    actions.setNotice(tr()("notice.saved", { id: input.id }));
+  },
+
+  async updateProvider(id: string, input: Omit<ProviderInput, "id">): Promise<void> {
+    const models = await api.updateProvider(id, input);
+    appStore.update((state) => ({ ...state, models }));
+    actions.setNotice(tr()("notice.saved", { id }));
+  },
+
+  async deleteProvider(id: string): Promise<void> {
+    const models = await api.deleteProvider(id);
+    appStore.update((state) => ({ ...state, models }));
+  },
+
+  // --- extensions -----------------------------------------------------------
+
+  /**
+   * Load the extension inventory for a workspace (null = user scope only).
+   *
+   * A resolution failure still resolves — the server reports it in `error` — so
+   * the page can render its own failure state instead of an empty list that
+   * would read as "nothing installed".
+   */
+  async loadExtensions(projectPath: string | null): Promise<void> {
+    try {
+      const extensions = await api.getExtensions(projectPath);
+      appStore.update((state) => ({ ...state, extensions }));
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * Toggle one extension. The server answers with the re-resolved list, which
+   * is the only honest source here: the pattern it wrote is what pi will read,
+   * and guessing the new state client-side could disagree with it.
+   */
+  async setExtensionEnabled(
+    projectPath: string | null,
+    item: { path: string; name: string },
+    enabled: boolean,
+  ): Promise<void> {
+    try {
+      const extensions = await api.setExtensionEnabled({
+        projectPath,
+        path: item.path,
+        enabled,
+      });
+      appStore.update((state) => ({ ...state, extensions }));
+      // Extensions are loaded when a pi process starts, and the server retires
+      // every resident one after this write — so the change lands on the next
+      // message, not on the next app launch.
+      actions.setNotice(tr()(enabled ? "notice.enabled" : "notice.disabled", { name: item.name }));
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  // --- update notices ---------------------------------------------------------
+
+  /**
+   * Read both update notices for a workspace (null = user scope only).
+   *
+   * A failed check still resolves — the server reports it inside the payload —
+   * so the page can say "could not check" instead of looking up to date. The
+   * answer is stored per workspace so the sidebar badge (user scope) and the
+   * settings page (selected project) do not overwrite each other.
+   */
+  async loadUpdates(
+    projectPath: string | null,
+    options: { force?: boolean } = {},
+  ): Promise<void> {
+    try {
+      const updates = await api.getUpdates(projectPath, { refresh: options.force });
+      appStore.update((state) => ({
+        ...state,
+        updates: { ...state.updates, [projectPath ?? ""]: updates },
+      }));
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * Update one installed package through pi's own package manager.
+   *
+   * Rethrows instead of routing through `setNotice`: this runs from the row
+   * that started it, which has to stay put and show progress and the reason for
+   * a failure — and npm can take long enough that a banner would be missed.
+   */
+  async updateExtension(projectPath: string | null, source: string): Promise<void> {
+    const updates = await api.updateExtension({ projectPath, source });
+    appStore.update((state) => ({
+      ...state,
+      updates: { ...state.updates, [projectPath ?? ""]: updates },
+    }));
+  },
+
+  // --- MCP -------------------------------------------------------------
+
+  /** Load the MCP inventory for a workspace (null = user scope only). */
+  async loadMcp(projectPath: string | null): Promise<void> {
+    try {
+      const mcp = await api.getMcp(projectPath);
+      appStore.update((state) => ({ ...state, mcp }));
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * The three writes below rethrow instead of routing through `setNotice`: they
+   * run from dialogs that must stay open and show the reason inline when the
+   * server rejects them.
+   */
+  async saveMcpServer(input: {
+    projectPath: string | null;
+    scope: "global" | "project";
+    originalName: string | null;
+    draft: McpServerDraft;
+  }): Promise<void> {
+    const mcp = await api.saveMcpServer(input);
+    appStore.update((state) => ({ ...state, mcp }));
+    actions.setNotice(tr()("notice.savedDraft", { name: input.draft.name }));
+  },
+
+  async deleteMcpServer(projectPath: string | null, name: string): Promise<void> {
+    const mcp = await api.deleteMcpServer({ projectPath, name });
+    appStore.update((state) => ({ ...state, mcp }));
+    actions.setNotice(tr()("notice.deleted", { name }));
+  },
+
+  /**
+   * Enable or disable one server. This writes a project entry, so it reports
+   * the same thing pi's own `/mcp` does for that workspace.
+   */
+  async setMcpServerEnabled(
+    projectPath: string | null,
+    name: string,
+    enabled: boolean,
+  ): Promise<void> {
+    try {
+      const mcp = await api.setMcpServerEnabled({ projectPath, name, enabled });
+      appStore.update((state) => ({ ...state, mcp }));
+      actions.setNotice(tr()(enabled ? "notice.enabled" : "notice.disabled", { name }));
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * Connect to one server. The result is returned rather than stored: it
+   * belongs to the card that asked for it, and it goes stale the moment the
+   * definition is edited.
+   */
+  async checkMcpServer(projectPath: string | null, name: string): Promise<McpProbeResult> {
+    return await api.checkMcpServer({ projectPath, name });
+  },
+
+  async restartMcp(): Promise<void> {
+    try {
+      const result = await api.restartMcp();
+      actions.setNotice(
+        result.closed === 0
+          ? tr()("notice.noSessions")
+          : tr()("notice.restarted", { count: result.closed }),
+      );
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  async refreshProjects(): Promise<void> {
+    try {
+      const projects = await api.listProjects();
+      appStore.update((state) => {
+        const stillExists = projects.some((project) => project.id === state.selectedProjectId);
+        const selectedProjectId = stillExists
+          ? state.selectedProjectId
+          : (projects[0]?.id ?? null);
+        return { ...state, projects, selectedProjectId };
+      });
+      const selected = appStore.get().selectedProjectId;
+      if (selected) await actions.refreshSessions(selected, { force: true });
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  async selectProject(projectId: string): Promise<void> {
+    appStore.update((state) => ({
+      ...state,
+      selectedProjectId: projectId,
+      // A prompt waiting on a draft of another project must not follow us here.
+      // The open conversation is deliberately left alone: expanding a
+      // workspace in the sidebar should not close what you are reading.
+      pendingPrompt: null,
+      // Same reasoning for the model: the available list is per project, so a
+      // choice made in one could name a model the next one cannot reach.
+      newSessionModel: null,
+    }));
+    await actions.refreshSessions(projectId);
+    // Warm a session while the user is deciding what to do, so the next "+"
+    // resolves without paying pi's ~1.6s cold start. Failures are ignored:
+    // the on-demand path in startDraftSession still works.
+    void api.prewarmSession(projectId).catch(() => undefined);
+    // Commands live inside the pi process, so ask for them while the user is
+    // still deciding. The request joins the prewarm above on the server.
+    void actions.loadCommands(projectId);
+  },
+
+  /** Idempotent: reveal a project's sessions without toggling them shut. */
+  expandProject(projectId: string): void {
+    appStore.update((state) =>
+      state.expandedProjects[projectId]
+        ? state
+        : { ...state, expandedProjects: { ...state.expandedProjects, [projectId]: true } },
+    );
+  },
+
+  /**
+   * Fetch the slash commands a project's pi process has registered — extension
+   * commands, prompt templates, and skill commands such as `/skill:pdf-tools`.
+   *
+   * Only a running process knows them, so the first call may wait on the
+   * project's prewarm. The result is cached in state, and an empty list still
+   * counts as loaded so a project without commands stops re-asking. Failures
+   * are swallowed: completion is an affordance, not a requirement.
+   */
+  async loadCommands(projectId: string, force = false): Promise<void> {
+    if (!force && appStore.get().commands[projectId]) return;
+
+    const inflight = commandsRequests.get(projectId);
+    if (inflight) return inflight;
+
+    const request = (async (): Promise<void> => {
+      try {
+        const result = await api.listCommands(projectId);
+        appStore.update((state) => ({
+          ...state,
+          commands: { ...state.commands, [projectId]: result.commands },
+        }));
+        if (result.error) console.warn(`[commands] ${projectId}: ${result.error}`);
+      } catch (err) {
+        console.warn(`[commands] ${projectId}: ${(err as Error).message}`);
+      } finally {
+        commandsRequests.delete(projectId);
+      }
+    })();
+
+    commandsRequests.set(projectId, request);
+    return request;
+  },
+
+  /**
+   * Load (or reload) one project's page of sessions.
+   *
+   * Without `force` this is a no-op once the sidebar already holds everything
+   * the current view would ask for: expanding a workspace that was expanded
+   * before must not cost another round trip, and the server pushes
+   * `sessions_changed` whenever a session file moves, so a held page cannot go
+   * stale behind the user's back.
+   *
+   * The page size is whatever the sidebar is showing, and a search asks for the
+   * whole list because it filters titles on the client rather than asking the
+   * server. `focus` keeps the open conversation in the answer even when it
+   * sorts below the cut.
+   */
+  async refreshSessions(projectId: string, options: { force?: boolean } = {}): Promise<void> {
+    const before = appStore.get();
+    const loaded = before.sessions[projectId];
+    const total = before.sessionTotals[projectId];
+    const searching = before.sessionQuery.trim().length > 0;
+    // The flat list has no workspace rows, so it has no "show more" either: the
+    // whole history is what it draws, and the whole history is what it asks for.
+    const wholeList = searching || before.sidebarView.groupBy === "flat";
+    const limit = wholeList
+      ? undefined
+      : (before.revealedSessions[projectId] ?? SESSIONS_PAGE_SIZE);
+
+    if (options.force !== true && loaded !== undefined) {
+      // Everything this view would draw: the page it asked for, capped by how
+      // many sessions the workspace actually has.
+      const wanted = limit ?? total ?? 0;
+      if (loaded.length >= Math.min(wanted, total ?? wanted)) return;
+    }
+
+    const sequence = (sessionRequests.get(projectId) ?? 0) + 1;
+    sessionRequests.set(projectId, sequence);
+
+    try {
+      const page = await api.listSessions(projectId, {
+        limit,
+        focus: before.selectedSessionPath,
+      });
+      if (sessionRequests.get(projectId) !== sequence) return;
+      appStore.update((state) => {
+        const next = {
+          ...state,
+          sessions: { ...state.sessions, [projectId]: page.sessions },
+          sessionTotals: { ...state.sessionTotals, [projectId]: page.total },
+        };
+        // A locally-created session whose file has landed is now a real row, so
+        // its provisional entry is retired here rather than rendered twice.
+        const unsaved = state.unsavedSessions[projectId];
+        if (unsaved === undefined) return next;
+        const onDisk = new Set(page.sessions.map((session) => session.path));
+        const remaining = unsaved.filter((path) => !onDisk.has(path));
+        if (remaining.length === unsaved.length) return next;
+        return {
+          ...next,
+          unsavedSessions: { ...state.unsavedSessions, [projectId]: remaining },
+        };
+      });
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  async addProject(path: string): Promise<ProjectView | null> {
+    try {
+      const project = await api.addProject(path);
+      await actions.refreshProjects();
+      await actions.selectProject(project.id);
+      actions.expandProject(project.id);
+      // Land on the hero so the new workspace is immediately usable.
+      actions.enterNewSession();
+      return project;
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+      return null;
+    }
+  },
+
+  async renameProject(projectId: string, title: string): Promise<void> {
+    try {
+      await api.renameProject(projectId, title);
+      await actions.refreshProjects();
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  async removeProject(projectId: string): Promise<void> {
+    try {
+      await api.removeProject(projectId);
+      await actions.refreshProjects();
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * 会话换了路径 —— 新建会话从 `draft:<项目>` 变成真实的 jsonl 路径。
+   *
+   * 服务端在拿到 `system:init` 时广播 `session_renamed`，这里把用户当前盯着的那条
+   * 路径换掉。不换的后果不是「显示旧名字」这种小问题：订阅是按路径过滤的，
+   * 换不掉就再也收不到这个会话的任何事件，界面会永远停在空白。
+   */
+  renameSessionPath(previousPath: string, sessionPath: string): void {
+    if (previousPath === sessionPath) return;
+    appStore.update((state) => ({
+      ...state,
+      selectedSessionPath:
+        state.selectedSessionPath === previousPath ? sessionPath : state.selectedSessionPath,
+      // 「未保存的新会话」列表里那一行也要跟着走，否则侧栏会留一条点不开的行。
+      unsavedSessions: replacePath(
+        state.unsavedSessions,
+        state.selectedProjectId ?? "",
+        previousPath,
+        sessionPath,
+      ),
+      // 排队中的首条消息是挂在旧路径上的，得一起搬，否则新会话收不到它。
+      pendingPrompt:
+        state.pendingPrompt?.sessionPath === previousPath
+          ? { ...state.pendingPrompt, sessionPath }
+          : state.pendingPrompt,
+    }));
+  },
+
+  selectSession(sessionPath: string | null): void {
+    appStore.update((state) => {
+      // Opening a session is reading its result, so its completion reminder has
+      // done its job. A running session keeps its mark.
+      const sessionActivity = { ...state.sessionActivity };
+      if (sessionPath !== null && sessionActivity[sessionPath] === "done") {
+        delete sessionActivity[sessionPath];
+      }
+      return {
+        ...state,
+        selectedSessionPath: sessionPath,
+        // Dropping the queued prompt here is what stops it from being delivered
+        // to whatever session the user opens next.
+        pendingPrompt: null,
+        // Leaving the new-session flow also drops the model chosen for it: the
+        // session it was meant for is not the one being opened.
+        newSessionModel: null,
+        sessionActivity,
+      };
+    });
+  },
+
+  /** Renames by writing pi's own `session_info` entry, so the CLI agrees. */
+  async renameSession(sessionPath: string, name: string): Promise<void> {
+    try {
+      await api.renameSession(sessionPath, name);
+      await actions.refreshProjects();
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /** Hides a session from the list without deleting its file. */
+  async setSessionHidden(sessionPath: string, hidden: boolean): Promise<void> {
+    try {
+      await api.setSessionHidden(sessionPath, hidden);
+      await actions.refreshProjects();
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * Delete a session file. pi's storage is the only copy, so this is the one
+   * session action that can lose work — the caller confirms first.
+   *
+   * The notice names which happened: `trash` means it is still recoverable
+   * from the system trash, `unlink` means it is gone for good.
+   */
+  async deleteSession(sessionPath: string): Promise<void> {
+    try {
+      const result = await api.deleteSession(sessionPath);
+      if (appStore.get().selectedSessionPath === sessionPath) actions.selectSession(null);
+      // The "changed by another process" dot and the run-state mark are keyed
+      // by path too; a deleted session must not leave either behind for a
+      // future session at that path.
+      actions.clearExternalChanged(sessionPath);
+      actions.clearSessionActivity(sessionPath);
+      await actions.refreshProjects();
+      actions.setNotice(
+        result.method === "trash" ? tr()("notice.trashed") : tr()("notice.deletedForever"),
+      );
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  /**
+   * Adopt a fresh session locally, then spawn its pi process in the background.
+   * Returns as soon as the UI has something to render.
+   */
+  startDraftSession(
+    projectId: string,
+    initialPrompt?: string,
+    images: ImageBlock[] = [],
+    model: { provider: string; id: string } | null = null,
+  ): void {
+    const localId = `${DRAFT_PREFIX}${Math.random().toString(36).slice(2, 10)}`;
+    appStore.update((state) => ({
+      ...state,
+      selectedProjectId: projectId,
+      selectedSessionPath: localId,
+      // Recorded under the workspace that started it: this is what keeps the row
+      // (and its still-running pi process) in the sidebar once the user looks
+      // somewhere else.
+      unsavedSessions: {
+        ...state.unsavedSessions,
+        [projectId]: [localId, ...(state.unsavedSessions[projectId] ?? [])],
+      },
+      pendingPrompt: null,
+      // Consumed here: the choice belongs to the session being created, not to
+      // whatever the user does after it exists.
+      newSessionModel: null,
+      expandedProjects: { ...state.expandedProjects, [projectId]: true },
+    }));
+
+    draftRequest = api
+      .createSession(projectId, model)
+      .then((created) => {
+        // The session exists either way; a stale model id only costs the
+        // choice, so it is reported without abandoning the draft.
+        if (created.modelError !== undefined) actions.setNotice(created.modelError);
+        // Queue before swapping the path in: the conversation instance that
+        // mounts for the real session consumes it after its history load.
+        // A first message can be a screenshot with nothing typed under it, so
+        // the condition is "anything to send" rather than "text" — the same
+        // rule the composer's own submit uses.
+        const prompt = initialPrompt?.trim() ?? "";
+        if (prompt.length > 0 || images.length > 0) {
+          actions.queuePendingPrompt(created.sessionPath, prompt, "prompt", images);
+        }
+        // The draft id is replaced by the real path in place, wherever the user
+        // has navigated to by now — the row follows the session, not the view.
+        appStore.update((state) => ({
+          ...state,
+          selectedSessionPath:
+            state.selectedSessionPath === localId ? created.sessionPath : state.selectedSessionPath,
+          unsavedSessions: replacePath(state.unsavedSessions, projectId, localId, created.sessionPath),
+        }));
+        return created.sessionPath;
+      })
+      .catch((err: unknown) => {
+        actions.setNotice((err as Error).message);
+        appStore.update((state) => ({
+          ...state,
+          selectedSessionPath: state.selectedSessionPath === localId ? null : state.selectedSessionPath,
+          unsavedSessions: replacePath(state.unsavedSessions, projectId, localId, null),
+        }));
+        return null;
+      });
+  },
+
+  /** Resolves once the draft's pi process is ready. */
+  async resolveDraftSession(): Promise<string | null> {
+    return draftRequest ?? null;
+  },
+
+  /**
+   * Hand a message to the session that a draft is becoming. The new
+   * conversation instance picks it up after its history load completes.
+   */
+  queuePendingPrompt(
+    sessionPath: string,
+    text: string,
+    mode: PendingPrompt["mode"],
+    images: ImageBlock[] = [],
+  ): void {
+    appStore.update((state) => ({
+      ...state,
+      // `images` is present only when there are any: a text-only handoff stays
+      // the same three-field object it has always been.
+      pendingPrompt: {
+        sessionPath,
+        text,
+        mode,
+        ...(images.length > 0 ? { images } : {}),
+      },
+    }));
+  },
+
+  /** Consume the queued message if it belongs to this session. */
+  takePendingPrompt(sessionPath: string): PendingPrompt | null {
+    const pending = appStore.get().pendingPrompt;
+    if (!pending || pending.sessionPath !== sessionPath) return null;
+    appStore.update((state) => ({ ...state, pendingPrompt: null }));
+    return pending;
+  },
+
+  /** Refresh the sidebar for the project the user is currently in. */
+  refreshSelectedProjectSessions(): void {
+    const projectId = appStore.get().selectedProjectId;
+    if (projectId) void actions.refreshSessions(projectId, { force: true });
+  },
+
+  markExternalChanged(sessionPath: string): void {    appStore.update((state) => ({
+      ...state,
+      externalChanged: { ...state.externalChanged, [sessionPath]: true },
+    }));
+  },
+
+  clearExternalChanged(sessionPath: string): void {
+    appStore.update((state) => {
+      const next = { ...state.externalChanged };
+      delete next[sessionPath];
+      return { ...state, externalChanged: next };
+    });
+  },
+
+  /**
+   * Fold an agent boundary into the sidebar's status mark.
+   *
+   * Called for every `session_event`, so it filters to the two boundaries that
+   * matter and leaves token deltas alone.
+   */
+  noteSessionActivity(sessionPath: string, event: SessionEvent): void {
+    if (event.type === "agent_start") actions.markSessionOngoing(sessionPath);
+    else if (event.type === "agent_settled") actions.markSessionSettled(sessionPath);
+  },
+
+  markSessionOngoing(sessionPath: string): void {
+    appStore.update((state) =>
+      state.sessionActivity[sessionPath] === "ongoing"
+        ? state
+        : {
+            ...state,
+            sessionActivity: { ...state.sessionActivity, [sessionPath]: "ongoing" },
+          },
+    );
+  },
+
+  /**
+   * A run finished. If the user is watching that session there is nothing to
+   * remind them about, so the mark is dropped rather than turned into a
+   * "completed" dot they would clear with their next click.
+   */
+  markSessionSettled(sessionPath: string): void {
+    const before = appStore.get();
+    const watching = before.selectedSessionPath === sessionPath;
+    // Only a task that was actually running can finish. Adopting a session that
+    // settles without this tab having seen it start (a reload mid-run, a
+    // session running elsewhere) is not a state change, and announcing it would
+    // be inventing one.
+    const wasRunning = before.sessionActivity[sessionPath] === "ongoing";
+    appStore.update((state) => {
+      const sessionActivity = { ...state.sessionActivity };
+      if (watching) delete sessionActivity[sessionPath];
+      else sessionActivity[sessionPath] = "done";
+      return { ...state, sessionActivity };
+    });
+
+    // The completion *notice* asks whether the user can see the session; the
+    // sidebar's "done" dot asks whether they might look at it next. They
+    // coincide here: nothing to announce about a result already on screen.
+    if (!watching && wasRunning) actions.notifyTaskFinished(sessionPath);
+  },
+
+  /**
+   * Raise a browser notification for a finished task, when the user asked for
+   * one. The permission itself is left to `showNotification`'s guard instead of
+   * being re-read here: a preference the browser has since revoked should not
+   * silently flip itself off in the settings page.
+   */
+  notifyTaskFinished(sessionPath: string): void {
+    if (!appStore.get().settings.browserNotifications) return;
+    const state = appStore.get();
+    showNotification(
+      findSessionTitle(state, sessionPath) ?? "anhe-claude-web",
+      tr()("notification.taskFinished"),
+      sessionPath,
+      () => {
+        // Opening the session is the useful answer to "which one finished?".
+        actions.selectSession(sessionPath);
+      },
+    );
+  },
+
+  clearSessionActivity(sessionPath: string): void {
+    appStore.update((state) => {
+      if (state.sessionActivity[sessionPath] === undefined) return state;
+      const sessionActivity = { ...state.sessionActivity };
+      delete sessionActivity[sessionPath];
+      return { ...state, sessionActivity };
+    });
+  },
+
+  /**
+   * Drop a locally-created session that will never reach disk.
+   *
+   * Its pi process being closed (idle sweep, capacity eviction, server
+   * shutdown) means the first assistant reply never arrived, so nothing will
+   * ever appear in the session list — leaving the row would point at a session
+   * that cannot be opened.
+   */
+  forgetUnsavedSession(sessionPath: string): void {
+    appStore.update((state) => {
+      const unsaved = { ...state.unsavedSessions };
+      let changed = false;
+      for (const [projectId, paths] of Object.entries(unsaved)) {
+        if (!paths.includes(sessionPath)) continue;
+        changed = true;
+        unsaved[projectId] = paths.filter((path) => path !== sessionPath);
+      }
+      return changed ? { ...state, unsavedSessions: unsaved } : state;
+    });
+  },
+
+  /** Show the new-session hero: no conversation is selected. */
+  enterNewSession(): void {
+    appStore.update((state) => ({
+      ...state,
+      selectedSessionPath: null,
+      pendingPrompt: null,
+      // Back to pi's own default: the hero is the place the choice is made, so
+      // opening it shows what pi would pick rather than the last pick.
+      newSessionModel: null,
+    }));
+  },
+
+  /**
+   * Remember the hero's model choice. Held in memory only, and consumed by the
+   * next `startDraftSession` — see `newSessionModel` for why it is not saved.
+   */
+  setNewSessionModel(model: ComposerModel | null): void {
+    appStore.update((state) => ({ ...state, newSessionModel: model }));
+  },
+
+  toggleProjectExpanded(projectId: string): void {
+    appStore.update((state) => {
+      const expanded = { ...state.expandedProjects };
+      if (expanded[projectId]) delete expanded[projectId];
+      else expanded[projectId] = true;
+      return { ...state, expandedProjects: expanded };
+    });
+  },
+
+  /**
+   * Reveal another page of sessions for one project.
+   *
+   * The rows have to be fetched: the sidebar only ever held the page it was
+   * showing, so the next one is a request rather than a re-slice.
+   */
+  revealMoreSessions(projectId: string, nextCount: number): void {
+    appStore.update((state) => ({
+      ...state,
+      revealedSessions: { ...state.revealedSessions, [projectId]: nextCount },
+    }));
+    void actions.refreshSessions(projectId, { force: true });
+  },
+
+  /**
+   * Switch how the sidebar groups what it draws.
+   *
+   * Turning on the one-list view widens every workspace to its whole session
+   * history: that view has no workspace rows — and so no "show more" — to
+   * reveal the rest from, so the rest has to be here already.
+   */
+  setGroupBy(groupBy: SessionGroupBy): void {
+    if (appStore.get().sidebarView.groupBy === groupBy) return;
+    appStore.update((state) => {
+      const sidebarView = { ...state.sidebarView, groupBy };
+      saveSidebarView(sidebarView);
+      return { ...state, sidebarView };
+    });
+    if (groupBy === "flat") {
+      for (const project of appStore.get().projects) {
+        void actions.refreshSessions(project.id);
+      }
+    }
+  },
+
+  /**
+   * Switch the session order.
+   *
+   * Manual keeps an account's saved arrangement if it has one — that order is
+   * the user's own work, and re-seeding it from the current recency every time
+   * they glanced at `updated` for a moment would throw it away. An account with
+   * nothing saved falls back to the recency order it is already showing (see
+   * `reconcileManualOrder`), so the switch itself never moves a row.
+   */
+  setOrderBy(orderBy: SessionOrderBy): void {
+    if (appStore.get().sidebarView.orderBy === orderBy) return;
+    appStore.update((state) => {
+      const sidebarView = { ...state.sidebarView, orderBy };
+      saveSidebarView(sidebarView);
+      return { ...state, sidebarView };
+    });
+  },
+
+  /**
+   * Save one account's manual order.
+   *
+   * `accountKey` is a workspace id, or `FLAT_ORDER_KEY` for the one list — dsh
+   * writes both into the same map, and so does this.
+   */
+  setSessionOrder(accountKey: string, order: readonly string[]): void {
+    appStore.update((state) => {
+      const sidebarView = {
+        ...state.sidebarView,
+        sessionOrder: { ...state.sidebarView.sessionOrder, [accountKey]: [...order] },
+      };
+      saveSidebarView(sidebarView);
+      return { ...state, sidebarView };
+    });
+  },
+
+  /**
+   * Drop one session onto another's edge.
+   *
+   * `order` is what the list is showing right now, and it is the caller's
+   * because only the renderer knows which rows survive the current filter and
+   * the revealed-page limit. A drop that changes nothing writes nothing.
+   */
+  moveSession(
+    accountKey: string,
+    order: readonly string[],
+    sourceId: string,
+    targetId: string,
+    half: "before" | "after",
+  ): void {
+    const next = moveInOrder(order, sourceId, targetId, half);
+    if (next === undefined) return;
+    actions.setSessionOrder(accountKey, next);
+  },
+
+  /**
+   * Drop one workspace onto another's edge.
+   *
+   * The positions go to the server rather than to a browser-local order: a
+   * workspace is a real entity here and already has `PUT /api/projects/order`,
+   * which dsh's Host does for its own Workspaces. `anchorId` is the workspace
+   * the dragged row lands before, or undefined to land last; the caller gates
+   * the drop to siblings, so an id from another subtree never arrives.
+   */
+  async moveProject(sourceId: string, anchorId: string | undefined): Promise<void> {
+    const state = appStore.get();
+    // The order the tree currently draws, which is what the ids have to be
+    // listed in: the endpoint rejects a list that is not every project once.
+    const ids = flattenProjectTree(
+      buildProjectTree(state.projects, {
+        nest: state.sidebarView.groupBy === "workspace-tree",
+      }),
+    ).map((node) => node.project.id);
+    const next = moveWorkspace(ids, sourceId, anchorId);
+    if (next === undefined) return;
+    try {
+      const projects = await api.reorderProjects(next);
+      appStore.update((current) => ({ ...current, projects }));
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  },
+
+  setSessionQuery(sessionQuery: string): void {
+    const wasSearching = appStore.get().sessionQuery.trim().length > 0;
+    appStore.update((state) => ({ ...state, sessionQuery }));
+    // A search screens titles on the client, so it needs the rows the paginated
+    // sidebar never fetched: widen every workspace it covers to the whole list.
+    // Once per search, not once per keystroke, and `refreshSessions` still
+    // skips a workspace whose list is already complete.
+    if (sessionQuery.trim().length > 0 && !wasSearching) {
+      for (const projectId of Object.keys(appStore.get().sessions)) {
+        void actions.refreshSessions(projectId);
+      }
+    }
+  },
+
+  openSearch(): void {
+    appStore.update((state) => ({ ...state, searchOpen: true }));
+  },
+
+  /**
+   * Close the search and clear it in one step.
+   *
+   * A collapsed field holding a filter the list is still wearing would be a
+   * filter the user can neither see nor clear, so every way out — Escape, the
+   * field's own clear control, a click outside an empty field — lands here.
+   * dsh folds the same two writes into its `setSearchExpanded(false)` and
+   * clear paths.
+   */
+  closeSearch(): void {
+    appStore.update((state) => ({ ...state, searchOpen: false, sessionQuery: "" }));
+  },
+
+  setNotice(notice: string | null): void {
+    appStore.update((state) => ({ ...state, notice }));
+  },
+
+  setActiveSessions(activeSessions: string[]): void {
+    appStore.update((state) => ({ ...state, activeSessions }));
+  },
+
+  /**
+   * Adopt the server's live-process list from a fresh `hello`.
+   *
+   * `hello` is the only frame that carries the whole handle list, and it
+   * arrives on every (re)connect. A session that is running necessarily holds a
+   * handle, so an "ongoing" mark with no handle lost its process while the
+   * stream was down — a server restart, most likely. Retired here, because
+   * otherwise the mark would keep the "Working..." label and the composer's
+   * Stop button up for a run that no longer exists, and no `session_closed` is
+   * coming to clear it. Distinct from `setActiveSessions`, which the
+   * `session_closed` handler calls with a list it has only *removed* from and
+   * which therefore cannot be treated as complete.
+   */
+  reconcileActiveSessions(activeSessions: string[]): void {
+    appStore.update((state) => {
+      const live = new Set(activeSessions);
+      const stale = Object.entries(state.sessionActivity).filter(
+        ([path, mark]) => mark === "ongoing" && !live.has(path),
+      );
+      if (stale.length === 0) return { ...state, activeSessions };
+      const sessionActivity = { ...state.sessionActivity };
+      for (const [path] of stale) delete sessionActivity[path];
+      return { ...state, activeSessions, sessionActivity };
+    });
+  },
+
+  enqueueUiRequest(pending: PendingUiRequest): void {
+    appStore.update((state) => {
+      // The id is pi's own uuid, so it identifies the dialog by itself. The
+      // session path is metadata that moves underneath it: a fresh session has
+      // no path when its extension asks, and the real one arrives a moment
+      // later — matching on the pair would queue the same question twice and
+      // leave the card up after it was answered.
+      const index = state.pendingUiRequests.findIndex(
+        (item) => item.request.id === pending.request.id,
+      );
+      if (index < 0) {
+        return { ...state, pendingUiRequests: [...state.pendingUiRequests, pending] };
+      }
+      // Same dialog, now with an address: keep the path for the jump line.
+      const existing = state.pendingUiRequests[index];
+      if (existing === undefined || existing.sessionPath !== "" || pending.sessionPath === "") {
+        return state;
+      }
+      const next = [...state.pendingUiRequests];
+      next[index] = pending;
+      return { ...state, pendingUiRequests: next };
+    });
+  },
+
+  /**
+   * Adopt the dialogs the server is still holding. Runs once at bootstrap, so
+   * it merges rather than replaces: a request pushed over SSE while this fetch
+   * was in flight must not be dropped by the reply to an older question.
+   */
+  async loadPendingUiRequests(): Promise<void> {
+    try {
+      const { requests } = await api.listUiRequests();
+      for (const pending of requests) actions.enqueueUiRequest(pending);
+    } catch {
+      // The stream is still the primary path; a failure here just means a
+      // dialog that predates this page stays hidden until it is answered.
+    }
+  },
+
+  /**
+   * Drop a request without answering it. Only for requests pi settled on its
+   * own — a timeout resolves them agent-side, and this Web client never learns
+   * about it through an event, so the card would otherwise hang around forever.
+   */
+  dismissUiRequest(id: string): void {
+    appStore.update((state) => ({
+      ...state,
+      pendingUiRequests: state.pendingUiRequests.filter((item) => item.request.id !== id),
+    }));
+  },
+
+  emitSessionEvent(sessionPath: string, event: SessionEvent): void {
+    actions.noteSessionActivity(sessionPath, event);
+    sessionEvents.emit({ sessionPath, event });
+  },
+};

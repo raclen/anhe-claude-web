@@ -1,0 +1,126 @@
+/*
+ * Ported rule-for-rule from dsh's DisclosureRow.module.css. The font-delta
+ * variables let the whole row scale with the content font size setting; both
+ * already exist in our theme, and the fallbacks match dsh's.
+ *
+ * The row owns its colour instead of each callsite setting one: dsh's header is
+ * tertiary at rest and steps up to secondary while hovered, and the title, the
+ * leading glyph, and the chevron all inherit that one value. A title painted
+ * secondary in its own file — which is how this row used to work — cannot follow
+ * the row through the hover, so the state feedback only ever reached the icon.
+ */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+
+.row {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  height: calc(24px + var(--dsh-content-font-delta, 0px));
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary);
+  transition: color 100ms ease;
+}
+
+.row[data-expandable] {
+  cursor: pointer;
+}
+
+.row:hover {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.leading {
+  position: relative;
+  flex: none;
+  width: calc(16px + var(--dsh-content-font-delta, 0px));
+  height: calc(16px + var(--dsh-content-font-delta, 0px));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+/* dsh pins row glyphs to 14 inside the 16px box. `:not([data-state])` leaves
+   room for a status dot to opt out of the size, which is how error rows swap
+   the icon for a coloured dot without changing the box. */
+.leading svg:not([data-state]) {
+  width: calc(14px + var(--dsh-content-font-delta, 0px));
+  height: calc(14px + var(--dsh-content-font-delta, 0px));
+}
+
+button.leading {
+  cursor: pointer;
+}
+
+/* The leading slot's two marks. Both stay mounted in both states on purpose:
+   dsh swaps a down chevron for a separate up-chevron element, and a swapped
+   node has no previous transform to animate from — the fold would appear to
+   snap. Rotating one chevron 180deg instead gives the same two marks and lets
+   the transition play, which is the same technique dsh's own turn-process
+   header uses.
+
+   The chevron is absolutely positioned inside the 16px box, so it occupies no
+   layout space and a collapsed row is exactly as wide as its content. */
+.iconIdle {
+  display: inline-flex;
+  opacity: 1;
+  transition: opacity 100ms ease;
+}
+
+.chevron {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  opacity: 0;
+  transition:
+    opacity 100ms ease,
+    transform 100ms ease;
+}
+
+/* Closed: hovering cross-fades the tool's own glyph into a chevron that says
+   "this row opens". `data-chevron-preview` is only set while `previewChevron` is
+   on, so a caller that turned the hover preview off still keeps the glyph on
+   hover. */
+.row:hover[data-chevron-preview] .iconIdle,
+/* Open: the chevron pins and points up, so the row stops advertising "click me"
+   and starts advertising "click to close". */
+.root[data-open] .iconIdle {
+  opacity: 0;
+}
+
+.row:hover[data-chevron-preview] .chevron,
+.root[data-open] .chevron {
+  opacity: 1;
+}
+
+.root[data-open] .chevron {
+  transform: rotate(180deg);
+}
+
+.title {
+  flex: none;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(24px + var(--dsh-content-font-delta, 0px));
+  color: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Only the easing goes; every state above still lands. The chevron's rotation
+     becomes an instant flip rather than a sweep, which is the point. */
+  .row,
+  .iconIdle,
+  .chevron {
+    transition: none;
+  }
+}

@@ -1,0 +1,83 @@
+/*
+ * Ported rule-for-rule from dsh's TurnProcessNodeView.module.css: the header is
+ * a full-width 33px button whose 8px of bottom padding sits inside the height,
+ * so the hairline lands on the same baseline whether the group is open or shut.
+ */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.header {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  height: calc(33px + var(--dsh-content-font-delta, 0px));
+  padding: 0 0 8px;
+  border: none;
+  /* The boundary between a turn's process and its answer. */
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  font: inherit;
+  font-size: var(--dsh-content-font-size, 14px);
+  cursor: pointer;
+  text-align: left;
+  transition: color 100ms ease;
+}
+
+.header:hover {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  color: inherit;
+  transition: transform 100ms ease;
+}
+
+.root[data-open] .chevron {
+  transform: rotate(180deg);
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: inherit;
+  line-height: calc(24px + var(--dsh-content-font-delta, 0px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Digits only — the units stay in the row's own face, the way dsh draws them. */
+.number {
+  font-family: var(--ds-font-family-code);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The rows inside the window keep the spacing they have outside it (16px, dsh's
+ * chat flow gap), which is what makes expanding feel like unfolding the
+ * transcript rather than switching to a denser list. No indent: the header is
+ * full-bleed with a hairline, so an indented body would line up under nothing.
+ */
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .header,
+  .chevron {
+    transition: none;
+  }
+}

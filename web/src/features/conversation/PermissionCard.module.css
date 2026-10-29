@@ -1,0 +1,81 @@
+/*
+ * 工具被拒时的说明卡。语气要「如实、可行动」，不要「出错了」。
+ * 左侧那条红边是唯一的强烈信号，其余尽量克制 —— 它经常出现，不该每次都很刺眼。
+ */
+
+.card {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-left: 3px solid #c0392b;
+  border-radius: 10px;
+  background: rgba(192, 57, 43, 0.05);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 18px;
+}
+
+.badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(192, 57, 43, 0.14);
+  color: #c0392b;
+  font-weight: 600;
+  font-size: 11.5px;
+}
+
+.tool {
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-mono, ui-monospace, monospace);
+}
+
+.reason {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.raw {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-secondary, rgba(128, 128, 128, 0.08));
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.rawMuted {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.help {
+  margin-top: 10px;
+}
+
+.helpTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.helpList {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.helpList li {
+  margin: 1px 0;
+}
