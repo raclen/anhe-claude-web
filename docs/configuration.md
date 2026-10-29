@@ -27,6 +27,21 @@
 | `ANHE_CLAUDE_WEB_SETTINGS` | 空（不传） | 启动 `claude` 时额外传 `--settings <path>`。**必须用它换上游**：`settings.json` 的 `env` 优先级高于进程环境变量和 `--model`，而且 `--settings` 是**合并**不是替换 |
 | `CLAUDE_CODE_PATH` | 自动探测 | 指定 Claude Code 可执行文件。自动探测失败时用，见下 |
 
+### 不常用的调优项
+
+一般不用设，出问题时才用。
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `ANHE_CLAUDE_WEB_SSE_BUFFER` | `4194304`（4 MB） | SSE 每连接的缓冲上限。事件积压超过它会被丢弃，防止内存失控 |
+| `ANHE_CLAUDE_WEB_SESSION_DIR` | 空（用 `~/.claude/projects`） | 会话目录覆盖。测试和多账号场景用 |
+| `ANHE_CLAUDE_WEB_TITLE_BYTES` | `120` | 自动标题的最大字节数 |
+| `ANHE_CLAUDE_WEB_TITLE_WORDS` | `8` | 截断式标题的单词数 |
+| `ANHE_CLAUDE_WEB_TITLE_INPUT_BYTES` | `2000` | 送去 LLM 生成标题的输入上限 |
+| `ANHE_CLAUDE_WEB_TITLE_OUTPUT_TOKENS` | `32` | 标题生成的输出 token 上限 |
+| `ANHE_CLAUDE_WEB_TITLE_TIMEOUT_MS` | `10000` | 标题生成超时 |
+| `ANHE_CLAUDE_WEB_SKIP_TITLE_MIGRATION` | 关 | 设为 `1` 跳过标题迁移。迁移卡住时用 |
+
 ## 关于 `CLAUDE_CODE_PATH`
 
 本项目**不打包** Claude Code，只在运行时探测你机器上已经装好的那个。探测顺序：

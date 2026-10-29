@@ -168,6 +168,12 @@ CLI → 宿主（`request` 内，zod 只强制前五项）：
 `decisionClassification` 官方语义：`user_temporary` = 允许一次，`user_permanent` = 总是允许
 （点击时以及后续缓存命中都要标这个），`user_reject` = 拒绝。**这正好对应 UI 三个按钮。**
 
+> **注意：这三个按钮在本版是跑不到的。** 见第 11 节——`can_use_tool` 只对 Anthropic
+> 认可的 SDK 宿主开放，第三方宿主拿不到权限提问。协议与代码都备好了
+> （`controls.ts` 的 `decideAllow` / `decideAlwaysAllow` / `decideDeny`，以及
+> `POST /api/sessions/:id/permissions/:requestId`），但运行时用不上。
+> 界面上实际存在的是 `PermissionDeniedCard`：只展示拒绝原因，没有按钮。
+
 ### 8. `updatedPermissions`（PermissionUpdate）全形
 
 ```jsonc

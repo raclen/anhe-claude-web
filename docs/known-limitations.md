@@ -31,10 +31,15 @@
 
 - **默认只绑 `127.0.0.1`，没有认证。** 不要反代到公网，见 [SECURITY.md](../SECURITY.md)。
 - **本版不弹权限确认卡。** 实测 Claude Code CLI 2.1.309 不把权限提问交给外部进程
-  （`--permission-prompts host` 只会得到一条 `permission_denied`；`--sdk-url` 被
-  `host is not an approved Anthropic endpoint` 拒绝）。权限完全由 CLI 按你的
-  `~/.claude/settings.json` 判定；本项目在被拒时**如实展示原因**并给出指引，
-  但不会、也不能替你点「允许」。要交互式批准，请用终端里的 `claude`。
+  （`--permission-prompts host` 只会得到一条 `system:permission_denied`；`--sdk-url` 被
+  `host is not an approved Anthropic endpoint` 拒绝，即 `can_use_tool` 只对 Anthropic
+  认可的 SDK 宿主开放）。权限完全由 CLI 按你的 `~/.claude/settings.json` 判定；
+  本项目在被拒时**如实展示原因**并给出指引，但不会、也不能替你点「允许」。
+  要交互式批准，请用终端里的 `claude`。
+
+  界面上那张卡叫 **`PermissionDeniedCard`**（文件是 `PermissionCard.tsx`），
+  它**不是**「允许 / 拒绝」按钮，只是一条拒绝说明。`POST /api/sessions/:id/permissions/:requestId`
+  这条路由的完整实现保留了，但第一版跑不到——协议一旦放开就能直接接上。
 - **权限模式六态**：`default`（默认，危险操作弹窗）、`acceptEdits`、`plan`、`dontAsk`、
   `auto`、`bypassPermissions`。
   - `bypassPermissions` 会让**所有**工具调用不经确认直接执行。切换时二次确认，
@@ -99,3 +104,13 @@
 - **代码高亮的两个上限**：超过 2 万字符的栅栏在没有可续接前缀时显示为纯文本；
   单行超过 2000 字符的一律不着色（正则引擎在这种行上会真的卡死）。
 - **图片以 base64 进会话文件**，上限 8 张/条、5MB/张；只认 `png/jpeg/gif/webp`，`svg` 被拒。
+
+## 分发相关
+
+- **npm 上会看到一个 `0.0.0-stage` 版本。** 这是 npm 的 staged publishing 占位包，
+  不是正式版本，也不是发错了。`latest` 指向真正的版本。详见
+  [release.md](./release.md)。
+- **包不附带 Claude Code，也不附带任何模型。** `npx anhe-claude-web` 装下来的只有本项目的
+  约 860 kB 代码；`claude` 得你自己装，上游得你自己配。
+- **本项目没有服务端组件。** 除了「检查更新」时查一次 `registry.npmjs.org` 的版本号，
+  运行时不向外发任何请求。见 [network-and-privacy.md](./network-and-privacy.md)。

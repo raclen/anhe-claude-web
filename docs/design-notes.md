@@ -59,24 +59,62 @@ claude -p
 
 其余所有代码（`routes.ts`、`sessions.ts`、前端全部）**与协议无关**。
 
-## 四、前端最大的一处新增：权限确认
+## 四、前端最大的新增：权限与拒绝
 
-pi-web 没有这个界面——因为 pi 的权限模型不同。Claude Code 每次要跑工具都会阻塞，
-等宿主回一个决定。所以本项目新增：
+pi-web 没有这个界面——因为 pi 的权限模型不同。Claude Code 每次要跑工具都会**阻塞**，
+等宿主回一个决定。于是本项目做了权限 UI，但**只做了一半，且这一半是被协议限制的**。
 
-- **`PermissionCard`**：展示 `display_name` + **原始 `input` 对象（不截断、不美化）**，
-  三个按钮对应 Claude Code 的 `decisionClassification`：
-  - 「允许一次」→ `behavior: "allow"` + `user_temporary`
-  - 「总是允许」→ `behavior: "allow"` + `user_permanent` +
-    `updatedPermissions: [{ type: "addRules", …, destination: "userSettings" }]`
-  - 「拒绝」→ `behavior: "deny"` + `user_reject` + 一句回给模型的原因
-- **`PermissionModeSwitch`**：六态。`plan` 模式顶部挂横幅（它在计划，不会动手）；
-  `bypassPermissions` 切换要二次确认，开启期间常驻警告条。
-- **`tool-map.ts`**：Claude Code 的工具名 → 展示组件。`Bash` 渲染成命令块、
-  `Read/Edit/Write` 渲染成路径 + diff、`Grep/Glob` 渲染 pattern、`Task` 折叠成子代理块、
-  `TodoWrite` 喂 `TodoPanel`、`AskUserQuestion` 复用 `QuestionCard`、
-  `ExitPlanMode` 走计划审批卡。
+### 4.1 为什么没有「允许 / 拒绝」按钮
 
+这是本项目最需要说清楚的一件事。
+
+设计之初的目标是 pi 那种弹卡：工具要跑之前停下来，宿主回一个 `allow` / `deny`。
+我们把 `can_use_tool` 的 schema 从二进制里挖出来了（`FINDINGS.md` 第 4 节），
+响应形状、`updatedPermissions` 的六种 `type`、六种 `permissionMode` 全部拿到。
+但**这扇门在运行时关着**：
+
+- `--permission-prompts host` 只会得到一条 `system:permission_denied`，不会把提问交给外部进程。
+- `--sdk-url` 直接被拒：`host "127.0.0.1" is not an approved Anthropic endpoint`。
+  也就是说 `can_use_tool` 只对 **Anthropic 认可的 SDK 宿主**开放。
+
+代码里的痕迹：`registry.ts` 的 spawn 参数特意写了**不要加** `--permission-prompts host` 的注释；
+`POST /api/sessions/:id/permissions/:requestId` 路由与 `answerPermission()` 的完整实现
+都保留了（协议一旦放开就能直接接上），但第一版跑不到。
+
+**所以：权限完全由 CLI 按你 `~/.claude/settings.json` 的 `permissions` 规则判定。**
+本界面能做的三件事：
+
+1. **切换模式**（六态，见 4.2）
+2. **如实展示拒绝**（`PermissionDeniedCard`，见 4.3）
+3. **用户显式点击后才写 allow 规则**（不主动替你放宽权限）
+
+### 4.2 `PermissionModeSwitch`：六态
+
+`default` / `acceptEdits` / `plan` / `dontAsk` / `auto` / `bypassPermissions`，
+与 `controls.ts` 的 `PERMISSION_MODES` 一一对应。
+
+- `plan` 模式顶部挂横幅（它在计划，不会动手）。
+- `bypassPermissions` 切换要二次确认，开启期间常驻警告条。
+- **切换是会话级动作**，只影响当前会话的进程；新建会话永远从 `default` 开始。
+
+### 4.3 `PermissionDeniedCard`：它不是什么
+
+文件名是 `PermissionCard.tsx`，但导出的组件叫 **`PermissionDeniedCard`**——
+这个名字改得刻意，因为**它不是一个「允许 / 拒绝」按钮**。
+
+它是一条**如实的拒绝说明**：CLI 拦下了某个工具，我们把原始原因
+（`message`、`decision_reason_type`）**完整摆出来、不截断、不改写**，
+并告诉用户三条可走的路。
+
+含糊其辞（「操作已取消」）会让人以为程序坏了；把原因摊开，用户才知道
+要么去终端批、要么换模式、要么改命令。
+
+### 4.4 `tool-map.ts`
+
+Claude Code 的工具名 → 展示组件。`Bash` 渲染成命令块、
+`Read/Edit/Write` 渲染成路径 + diff、`Grep/Glob` 渲染 pattern、`Task` 折叠成子代理块、
+`TodoWrite` 喂 `TodoPanel`、`AskUserQuestion` 复用 `QuestionCard`、
+`ExitPlanMode` 走计划审批卡。
 ## 五、会话来源：从「pi 的 session dir」改成「`~/.claude/projects`」
 
 - 项目分组**只读 jsonl 每行的 `cwd`**。Claude Code 的目录 slug 不可反推
@@ -110,6 +148,130 @@ pi-web 没有这个界面——因为 pi 的权限模型不同。Claude Code 每
 2. **进程模型不常驻。** 空闲 10 分钟回收，再发消息用 `--resume` 重开，约 1–2 秒。
 3. **打字机效果取决于上游是否转发 SSE 增量。** 不转发就整段出现，内容没错。
 
-## 九、端口
+## 九、运行机制：一个会话一个进程
 
-`5419`。pi-web-simple 用 `5319`，同机共存时不会撞。
+这是理解本项目行为的核心，也是所有「为什么慢」「为什么刷新后要等」的答案来源。
+
+### 8.1 进程生命周期
+
+```
+POST /api/sessions            → 返回 draft:<项目路径>（还没有 jsonl）
+POST /api/sessions/:id/prompt → 起 claude 子进程，写第一条 user 消息
+                              → CLI 发 system:init，带回 session_id
+                              → 服务端广播 session_renamed{draft:… → <id>.jsonl}
+空闲 ANHE_CLAUDE_WEB_IDLE_MS   → 回收子进程（默认 10 分钟）
+再次发消息                     → --resume <id> 重开，约 1–2 秒
+```
+
+三个由此而来的事实：
+
+- **新会话在第一条消息发出前没有 id。** 路径是 `draft:<项目路径>` 这个临时键。
+  此时刷新页面会回到「新会话」状态——这不是丢数据，是 CLI 还没给 id。
+- **`session_renamed` 必须送到订阅旧键的流上。** 否则订阅方永远停在 `draft:` 键上，
+  之后一条事件都收不到。实现在 `bus.ts` 的 `wantsFrame`。
+- **`--resume` 是有代价的。** 比不了终端里的常驻进程，但换来的是空闲时不占内存。
+
+### 8.2 并发与回收
+
+- 最多同时 `ANHE_CLAUDE_WEB_MAX_SESSIONS`（默认 8）个子进程。
+- 超了先回收最久未用的那个（`evictOldest`）。
+- 会话文件全部落盘在 `~/.claude/projects/`，进程没了历史还在。
+
+### 8.3 fork 的真实行为
+
+`--resume <id> --fork-session` 在 Claude Code 上是**开一个新文件**，
+不是 pi 那种「把当前会话的 leaf 挪回去」。三个实测事实：
+
+1. 单独启动**不发** `system:init`，要等第一条 prompt。
+2. init 后立刻 `interrupt` **不会落盘**新 jsonl，要真跑完一轮。
+3. fork 文件的**项目目录跟随 `cwd`**，所以 fork 必须用原会话的 `projectPath` 启动。
+
+后果：新会话的第一条会是我们发的一句占位消息（`FORK_OPENER`）。
+「只复制历史、不说话」在这个 CLI 上做不到。详见 `known-limitations.md`。
+
+## 十、事件流：SSE 单向推送
+
+服务端只推不拉。浏览器开一条 `GET /api/events`，服务端按会话路径过滤后推送。
+
+事件类型（前端 `useConversation.ts` 消费的）：
+
+| 类型 | 含义 |
+|---|---|
+| `session_init` | CLI 报告会话已建立，带 `session_id`、`model`、`tools`、`permissionMode` |
+| `session_renamed` | draft 键迁移到真实 jsonl 路径 |
+| `message_start` / `message_update` / `message_end` | 一条助手消息从开始到结束 |
+| `text_delta` / `thinking_delta` | 逐字增量（打字机效果靠它） |
+| `toolcall_start` / `toolcall_delta` / `toolcall_end` | 工具调用的流式参数 |
+| `tool_execution_start` / `_update` / `_end` | 工具真正执行的过程 |
+| `permission_denied` | 权限被 CLI 拦下（**不是**询问，是已拒绝） |
+| `turn_result` | 一轮结束，带 `total_cost_usd`、`usage`、`duration_ms` |
+| `agent_settled` | 整个 agent 停下来了（验收脚本等这个） |
+
+**归一是降级安全的**：上游不给增量，`normalize.ts` 就退化成整条一次性更新，
+内容不会错，只是没有动效。
+
+## 十一、API 地图
+
+给要改代码的人一张索引。全部挂在同一个端口，前端与 API 同源。
+
+### 元信息与健康
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/health` | 存活与活动会话数 |
+| GET | `/api/health/upstream` | 上游是否可用（最小探针） |
+| GET | `/api/meta/cli` | 找到的 Claude Code 路径、版本、来源 |
+| GET | `/api/meta/models` | 模型候选（动态读，不硬编码） |
+| GET | `/api/env` | 环境快照（不含密钥） |
+
+### 项目与会话
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET/POST | `/api/projects` | 项目列表 / 注册项目 |
+| PATCH/DELETE | `/api/projects/:id` | 改名 / 移除 |
+| GET | `/api/projects/:id/sessions` | 该项目下的会话（按 jsonl 的 `cwd` 分） |
+| POST | `/api/sessions` | 新建，返回 `draft:<项目路径>` |
+| GET | `/api/sessions/:id/messages` | 消息列表 + `forkPoints` |
+| POST | `/api/sessions/:id/prompt` | 发消息（字段名是 **`message`**，不是 `text`） |
+| POST | `/api/sessions/:id/abort` | 中断当前轮次（幂等） |
+| POST | `/api/sessions/:id/fork` | 从某个 `entryId` 分叉，返回**新**会话路径 |
+| POST | `/api/sessions/:id/rename` | 改标题 |
+| POST | `/api/sessions/:id/reload` | 重新从磁盘读 |
+
+### 权限与用量
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/sessions/:id/permissions` | 待处理的权限请求（第一版恒为空） |
+| POST | `/api/sessions/:id/permission-mode` | 六态切换 |
+| POST | `/api/sessions/:id/permissions/:requestId` | 回答权限请求（协议放开后才用得上） |
+| GET | `/api/sessions/:id/usage` | token 与花费 |
+
+### 右栏 IDE
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/fs/list`、`/api/fs/locations` | 目录浏览 |
+| GET | `/api/projects/:id/files`、`/file`、`/text`、`/raw` | 文件树与文件内容 |
+| GET | `/api/projects/:id/git` | Git 变更 |
+| POST | `/api/projects/:id/git/{stage,commit,discard,push,branch}` | Git 操作 |
+| GET/POST/DELETE | `/api/terminal` | 终端（需要可选依赖 `node-pty`） |
+
+### 只读边界
+
+模型 provider、MCP、扩展的**写**路由统一返回 400 / 404。想改就去改
+`~/.claude/settings.json`，或者用终端里的 `/config`、`/mcp`。
+理由：这些文件没有公开 schema 契约，用 UI 写进去等于在别人的私有格式上做双写。
+
+## 十二、端口
+
+| 场景 | 端口 |
+|---|---|
+| 发布版（`npx anhe-claude-web`） | **5419** |
+| 开发：后端 | 4419（`server/src/config.ts` 的默认值） |
+| 开发：前端 Vite | 5519 |
+| pi-web-simple（若同机共存） | 5319 |
+
+注意 `config.ts` 里写的默认是 4419（开发用），发布版由 `cli/bin.js` 传 5419。
+这两个数字**不一样是故意的**：开发时不该抢发布版的端口。

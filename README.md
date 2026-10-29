@@ -140,20 +140,47 @@ jsonl 写出来，而 `system:init` 也要等第一条 prompt。所以「只复�
 新建会话在发出第一条消息之前只存在于内存里（路径是 `draft:<项目目录>`），没有 jsonl。
 发一条消息之后 CLI 才会生成真文件。这是 Claude Code 的行为，不是丢数据。
 
+## 文档
+
+| 文档 | 看什么 |
+|---|---|
+| [docs/configuration.md](./docs/configuration.md) | 全部参数与环境变量、`CLAUDE_CODE_PATH` 探测顺序、与 `~/.claude` 的关系 |
+| [docs/known-limitations.md](./docs/known-limitations.md) | **装之前先扫一遍**：做不到什么、为什么 |
+| [docs/design-notes.md](./docs/design-notes.md) | 架构、进程模型、事件流、API 地图、为什么权限卡只做了一半 |
+| [docs/network-and-privacy.md](./docs/network-and-privacy.md) | 数据流向、本项目主动发起的网络请求 |
+| [SECURITY.md](./SECURITY.md) | 安全边界 |
+| [docs/development.md](./docs/development.md) | 改代码：目录结构、硬边界、踩过的坑 |
+| [docs/release.md](./docs/release.md) | 发版：完整清单，含 2FA 与 staged publishing 的坑 |
+| [PROJECT_RULES.md](./PROJECT_RULES.md) | 实测出来的协议事实与不允许违反的硬边界 |
+
 ## 开发
 
 ```sh
 pnpm install
-pnpm dev          # 前端 Vite + 后端 tsx watch
+pnpm dev          # 前端 Vite(5519) + 后端 tsx watch(4419)
 pnpm typecheck
 pnpm build
-pnpm accept       # 端到端验收（HTTP + SSE 断言，需要能用的 claude）
+pnpm accept       # 端到端验收（52 项断言，需要能用的 claude）
 ```
 
 改协议相关的东西之前，先读 [PROJECT_RULES.md](./PROJECT_RULES.md)——
 那里记着实测出来的协议事实和几条不允许违反的硬边界。
+更细的开发说明见 [docs/development.md](./docs/development.md)。
 
 要发布新版本，照 [docs/release.md](./docs/release.md) 的清单走。
+
+## 发布状态
+
+| 项 | 值 |
+|---|---|
+| npm | https://www.npmjs.com/package/anhe-claude-web |
+| 最新版本 | `0.1.0` |
+| 实测基线 | `@anthropic-ai/claude-code@2.1.309` |
+| 许可 | MIT |
+
+> npm 上还会看到一个 `0.0.0-stage`。那是 npm staged publishing 的占位包，
+> 不是正式版本，`latest` 指向真正的版本。详见
+> [docs/release.md](./docs/release.md#会看到-000-stage别慌)。
 
 ## License
 
