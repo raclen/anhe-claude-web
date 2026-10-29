@@ -410,53 +410,25 @@ export const api = {
    * session only knows what *it* loaded, while the useful question is what the
    * next pi start would load. `projectPath` adds the workspace scope.
    */
+  /**
+   * The extension inventory, read from Claude Code's own folders. **Read-only**:
+   * there is no write path — enablement is changed in the terminal.
+   */
   getExtensions: (projectPath: string | null) =>
     request<ExtensionsView>(
       `/api/extensions${projectPath ? `?projectPath=${encodeURIComponent(projectPath)}` : ""}`,
     ),
 
   /**
-   * Toggle one extension. The write lands in pi's settings file, so it is only
-   * read back by a freshly started process — the server retires the resident
-   * ones and answers with the full re-resolved list.
-   */
-  setExtensionEnabled: (input: {
-    projectPath: string | null;
-    path: string;
-    enabled: boolean;
-  }) =>
-    request<ExtensionsView>("/api/extensions", {
-      method: "PUT",
-      body: JSON.stringify(input),
-    }),
-
-  /**
-   * Update notices: whether a newer pi is published, and which installed pi
-   * packages are behind their upstream.
+   * Update notice: whether a newer anhe-claude-web is published.
    *
    * `refresh` bypasses the server's short cache — the default read reuses a
    * recent answer, so opening the settings page does not spawn a check per
    * visit. A failed check is reported in the payload rather than as an HTTP
    * error; the page renders "could not check" differently from "up to date".
    */
-  getUpdates: (projectPath: string | null, options: { refresh?: boolean } = {}) => {
-    const params = new URLSearchParams();
-    if (projectPath !== null && projectPath.length > 0) params.set("projectPath", projectPath);
-    if (options.refresh === true) params.set("refresh", "true");
-    const query = params.toString();
-    return request<UpdatesView>(`/api/updates${query.length > 0 ? `?${query}` : ""}`);
-  },
-
-  /**
-   * Update one installed pi package to its upstream version, through pi's own
-   * package manager (the same thing `pi update <source>` does). Slow by nature:
-   * npm has to resolve and download, so the caller keeps a progress state.
-   */
-  updateExtension: (input: { projectPath: string | null; source: string }) =>
-    request<UpdatesView>("/api/updates/extensions", {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
+  getUpdates: (options: { refresh?: boolean } = {}) =>
+    request<UpdatesView>(`/api/updates${options.refresh === true ? "?refresh=true" : ""}`),
 
   /**
    * MCP servers, read from pi's own `mcp.json` files — a running session only

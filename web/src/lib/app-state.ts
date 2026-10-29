@@ -205,15 +205,10 @@ export interface AppState {
    */
   mcp: McpView | null;
   /**
-   * Update notices, keyed by workspace path (empty string = user scope).
-   *
-   * Keyed rather than singular because two different questions are asked at
-   * once: the settings and plugins pages resolve the *selected project* (a
-   * project-local package can be behind while the global ones are current),
-   * while the sidebar badge reads the user-scope answer loaded at bootstrap.
-   * A single slot would let one overwrite the other.
+   * The app's own update notice (whether a newer npm release exists). `null`
+   * means not loaded yet; one answer, so one slot.
    */
-  updates: Record<string, UpdatesView>;
+  updates: UpdatesView | null;
 }
 
 const initialState: AppState = {
@@ -245,7 +240,7 @@ const initialState: AppState = {
   models: null,
   extensions: null,
   mcp: null,
-  updates: {},
+  updates: null,
 };
 
 /** In-flight spawn for the draft the user is currently looking at. */
@@ -362,7 +357,7 @@ export const actions = {
     void actions.loadSettings();
     // Fire-and-forget too: this only decides whether the settings entry shows
     // an update dot, and nothing on first paint should wait on the network.
-    void actions.loadUpdates(null);
+    void actions.loadUpdates();
     // Dialogs opened before this page loaded are still pending server-side, and
     // the SSE stream carries no history — without this they would never be
     // rendered, and their pi processes would wait on nobody.
@@ -503,9 +498,9 @@ export const actions = {
   /**
    * Load the extension inventory for a workspace (null = user scope only).
    *
-   * A resolution failure still resolves — the server reports it in `error` — so
-   * the page can render its own failure state instead of an empty list that
-   * would read as "nothing installed".
+   * The list is read-only: whatever could not be read comes back in `errors`,
+   * so the page shows a failure state instead of an empty list that would read
+   * as "nothing installed".
    */
   async loadExtensions(projectPath: string | null): Promise<void> {
     try {
@@ -516,70 +511,23 @@ export const actions = {
     }
   },
 
-  /**
-   * Toggle one extension. The server answers with the re-resolved list, which
-   * is the only honest source here: the pattern it wrote is what pi will read,
-   * and guessing the new state client-side could disagree with it.
-   */
-  async setExtensionEnabled(
-    projectPath: string | null,
-    item: { path: string; name: string },
-    enabled: boolean,
-  ): Promise<void> {
-    try {
-      const extensions = await api.setExtensionEnabled({
-        projectPath,
-        path: item.path,
-        enabled,
-      });
-      appStore.update((state) => ({ ...state, extensions }));
-      // Extensions are loaded when a pi process starts, and the server retires
-      // every resident one after this write — so the change lands on the next
-      // message, not on the next app launch.
-      actions.setNotice(tr()(enabled ? "notice.enabled" : "notice.disabled", { name: item.name }));
-    } catch (err) {
-      actions.setNotice((err as Error).message);
-    }
-  },
-
   // --- update notices ---------------------------------------------------------
 
   /**
-   * Read both update notices for a workspace (null = user scope only).
+   * Read the app's update notice (its own npm package) and store it.
    *
    * A failed check still resolves — the server reports it inside the payload —
-   * so the page can say "could not check" instead of looking up to date. The
-   * answer is stored per workspace so the sidebar badge (user scope) and the
-   * settings page (selected project) do not overwrite each other.
+   * so the page can say "could not check" instead of looking up to date. There
+   * is only one answer now (the app itself), so there is no per-workspace slot
+   * to keep apart.
    */
-  async loadUpdates(
-    projectPath: string | null,
-    options: { force?: boolean } = {},
-  ): Promise<void> {
+  async loadUpdates(options: { force?: boolean } = {}): Promise<void> {
     try {
-      const updates = await api.getUpdates(projectPath, { refresh: options.force });
-      appStore.update((state) => ({
-        ...state,
-        updates: { ...state.updates, [projectPath ?? ""]: updates },
-      }));
+      const updates = await api.getUpdates({ refresh: options.force });
+      appStore.update((state) => ({ ...state, updates }));
     } catch (err) {
       actions.setNotice((err as Error).message);
     }
-  },
-
-  /**
-   * Update one installed package through pi's own package manager.
-   *
-   * Rethrows instead of routing through `setNotice`: this runs from the row
-   * that started it, which has to stay put and show progress and the reason for
-   * a failure — and npm can take long enough that a banner would be missed.
-   */
-  async updateExtension(projectPath: string | null, source: string): Promise<void> {
-    const updates = await api.updateExtension({ projectPath, source });
-    appStore.update((state) => ({
-      ...state,
-      updates: { ...state.updates, [projectPath ?? ""]: updates },
-    }));
   },
 
   // --- MCP -------------------------------------------------------------

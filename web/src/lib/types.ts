@@ -561,80 +561,60 @@ export interface ProviderInput {
 }
 
 /**
- * One extension pi would consider loading, resolved by pi's own package
- * manager. `origin` and `scope` decide which settings key a toggle writes, so
- * they travel with the row rather than being re-derived on the client.
+ * One extension Claude Code would consider loading, read from its own folders.
+ *
+ * This build is read-only: enablement is flipped in the terminal, never here, so
+ * the row carries the observed state rather than an editable one.
  */
 export interface ExtensionItem {
-  /** The entry file (or directory) pi loads; also the toggle identity. */
-  path: string;
-  /** Row label: file stem, directory name, or package name. */
+  /** Stable id: `kind:scope:name`. */
+  id: string;
+  /** Skills, plugins and sub-agents are the three kinds Claude Code loads. */
+  kind: "skill" | "plugin" | "agent";
   name: string;
-  /** What contributed it: `auto`, `local`, or a package source. */
-  source: string;
+  description: string | null;
   scope: "user" | "project";
-  origin: "top-level" | "package";
-  enabled: boolean;
+  /** Directory or file it lives in, shown as its source. */
+  path: string;
+  /** Whether it is enabled; null means "could not tell" (not "off"). */
+  enabled: boolean | null;
+  /** Version, only plugins carry one; otherwise null. */
+  version: string | null;
 }
 
 export interface ExtensionsView {
-  agentDir: string;
-  /** pi's global settings file. */
-  settingsPath: string;
-  projectPath: string | null;
-  /** `<project>/.pi/settings.json`, when a workspace was resolved. */
-  projectSettingsPath: string | null;
-  /** pi gates project-local resources on this. */
-  projectTrusted: boolean;
-  extensions: ExtensionItem[];
-  /**
-   * Resolution failure. Present instead of an empty list so the page can tell
-   * "you have no extensions" apart from "the read broke".
-   */
-  error: string | null;
+  items: ExtensionItem[];
+  /** Paths that could not be read, and why — shown, not swallowed. */
+  errors: Array<{ path: string; message: string }>;
+  /** This build never writes extension state back. */
+  readOnly: true;
 }
 
 /**
- * Whether a newer pi is published. Resolved by the server against pi's own
- * release endpoint — the same one the CLI polls at startup.
+ * Whether a newer anhe-claude-web is published. Resolved by the server against
+ * the npm registry's `latest` dist-tag.
  */
-export interface PiVersionInfo {
-  /** The pi this server runs (the version of the package it imported). */
+export interface VersionInfo {
+  /** The version this server is running. */
   current: string;
-  /** Newest announced release, or null when it could not be determined. */
+  /** Newest published version, or null when it could not be determined. */
   latest: string | null;
   available: boolean;
   note: string | null;
-  packageName: string;
-  /** The command that moves *this server* to the newer pi. */
+  /** The command that moves an installed copy to the newer version. */
   updateCommand: string;
   /**
    * Why the check produced no answer. Kept apart from `available: false` so
    * the page can say "could not check" instead of claiming "up to date".
    */
   error: string | null;
-  /** The check was deliberately skipped (`PI_OFFLINE` / `PI_SKIP_VERSION_CHECK`). */
+  /** The check was deliberately skipped (`OFFLINE` / `SKIP_VERSION_CHECK`). */
   skipped: boolean;
 }
 
-/** One installed pi package pi reports as behind its upstream. */
-export interface ExtensionUpdate {
-  /** The source string as pi's settings record it; matches `ExtensionItem.source`. */
-  source: string;
-  displayName: string;
-  type: "npm" | "git";
-  scope: "user" | "project";
-}
-
-/**
- * Both update notices for one workspace: pi itself, and the installed packages
- * pi can compare against upstream.
- */
+/** The one update notice this app shows: its own npm package. */
 export interface UpdatesView {
-  pi: PiVersionInfo;
-  extensions: ExtensionUpdate[];
-  /** A package check that broke (not "no updates"); the list stays empty. */
-  extensionsError: string | null;
+  self: VersionInfo;
   /** When the server resolved this answer (epoch ms). */
   checkedAt: number;
 }

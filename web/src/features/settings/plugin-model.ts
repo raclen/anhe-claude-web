@@ -13,11 +13,9 @@ export type PluginScope = "user" | "project";
 /**
  * The two groups, both open by default.
  *
- * dsh folds its global list away because the preset list is the answer most
- * users want there. Here the global list is the one that always exists — a
- * workspace may have no `.pi` at all — so folding it would hide the page's main
- * content for no reason. Subtitles are dsh's, adapted from "会话/预设" to pi's
- * workspace scope.
+ * The global list is the one that always exists — a workspace may have no
+ * `/`.claude` at all — so folding it would hide the page's main content for no
+ * reason.
  */
 export function groupMeta(
   t: Translate,
@@ -34,23 +32,30 @@ export function groupMeta(
   };
 }
 
-/** What contributed an entry, in the terms the row can act on. */
-export function extensionSourceLabel(item: ExtensionItem, t: Translate): string {
-  if (item.origin === "package") return t("settings.pluginOrigin.package");
-  if (item.source === "auto") return t("settings.pluginOrigin.auto");
-  if (item.source === "local") return t("settings.pluginOrigin.local");
-  return item.source;
+/** The row's kind, in the terms Claude Code uses (skill / plugin / sub-agent). */
+export function extensionKindLabel(item: ExtensionItem, t: Translate): string {
+  if (item.kind === "skill") return t("settings.pluginKind.skill");
+  if (item.kind === "plugin") return t("settings.pluginKind.plugin");
+  return t("settings.pluginKind.agent");
+}
+
+/**
+ * Whether an entry is on. `null` is "could not tell", which must not be rounded
+ * to "off" — the page would then claim something it does not know.
+ */
+export function extensionStateLabel(item: ExtensionItem, t: Translate): string {
+  if (item.enabled === null) return t("settings.plugins.stateUnknown");
+  return item.enabled ? t("common.enabled") : t("common.disabled");
 }
 
 /**
  * Split the inventory into its two scopes and apply the search.
  *
- * Matching covers the path and the source as well as the label: the label for a
- * package entry is its package name, and someone looking for the file they
- * dropped into `extensions/` is more likely to type part of the path. An empty
- * query keeps everything, which is what makes the count next to each group
- * heading mean "how many live here" rather than "how many matched" when nothing
- * is being searched for.
+ * Matching covers the path and the description as well as the label, since
+ * someone looking for an entry is as likely to type part of where it lives or
+ * what it does. An empty query keeps everything, which is what makes the count
+ * next to each group heading mean "how many live here" rather than "how many
+ * matched" when nothing is being searched for.
  */
 export function groupExtensions(
   view: ExtensionsView | null,
@@ -60,9 +65,9 @@ export function groupExtensions(
   if (view === null) return groups;
 
   const needle = query.trim().toLowerCase();
-  for (const item of view.extensions) {
+  for (const item of view.items) {
     if (needle.length > 0) {
-      const haystack = `${item.name} ${item.path} ${item.source}`.toLowerCase();
+      const haystack = `${item.name} ${item.path} ${item.description ?? ""}`.toLowerCase();
       if (!haystack.includes(needle)) continue;
     }
     groups[item.scope].push(item);

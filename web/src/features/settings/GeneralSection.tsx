@@ -335,7 +335,7 @@ export function GeneralSection({ className }: { className?: string }) {
           about how it behaves — a version notice is not a preference, and the
           rows above are the ones people come here to change.
         */}
-        <UpdateSection projectPath={projectPath} />
+        <UpdateSection />
     </div>
   );
 }

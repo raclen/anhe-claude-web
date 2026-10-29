@@ -32,9 +32,9 @@ export function Sidebar() {
   const drag = useSidebarDrag(tree);
   const closeViewMenu = useCallback(() => setViewMenuAt(null), []);
   const currentProject = state.projects.find((project) => project.id === state.selectedProjectId);
-  // The user-scope answer, loaded at bootstrap: the badge is about the tool
-  // itself, so it does not follow whichever workspace is selected.
-  const updateAvailable = hasAnyUpdate(state.updates[""] ?? null);
+  // The answer loaded at bootstrap: the badge is about the tool itself, so it
+  // does not follow whichever workspace is selected.
+  const updateAvailable = hasAnyUpdate(state.updates);
 
   const searchRootRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
