@@ -477,6 +477,45 @@ async function main() {
     await post(`/api/sessions/${enc(sessionPath)}/abort`, {}, base);
     ok("abort 被接受（无活动轮次时也应为幂等成功）", `${Date.now() - beforeAbort}ms`);
 
+    // 真打一次：发一个会让模型长输出、且会调工具的任务，跑起来后立刻 abort。
+    // 只验「接口返回 200」是不够的 —— 那个 200 也可能是什么都没做。
+    const abortMark = stream.events.length;
+    await post(
+      `/api/sessions/${enc(sessionPath)}/prompt`,
+      { message: "请用 Bash 工具执行 `node -e \"setTimeout(()=>{},45000)\"`，等它结束再告诉我。" },
+      base,
+    );
+    // 等到真的开始干活再打断，否则打的是空气。
+    let started = false;
+    try {
+      await stream.waitFor(
+        (r) => r.seq >= abortMark && r.payload?.event?.type === "message_start",
+        90_000,
+      );
+      started = true;
+    } catch {
+      started = false;
+    }
+    assert("长任务已开跑", started, started ? "已收到 message_start" : "90s 内没有开跑");
+
+    const beforeInterrupt = Date.now();
+    const abortRes = await post(`/api/sessions/${enc(sessionPath)}/abort`, {}, base);
+    assert("运行中 abort 返回成功", abortRes?.ok === true, JSON.stringify(abortRes));
+
+    // 真正的判据：这一轮必须比不打断时早得多地结束。
+    let settled = false;
+    try {
+      await stream.waitFor(
+        (r) => r.seq >= abortMark && sessionEvent(sessionPath, "agent_settled")(r),
+        90_000,
+      );
+      settled = true;
+    } catch {
+      settled = false;
+    }
+    const stopMs = Date.now() - beforeInterrupt;
+    assert("打断后很快就收尾", settled && stopMs < 60_000, `${stopMs}ms`);
+
     // === H. usage 与统计 ====================================================
     console.log("\nH. 用量统计");
 

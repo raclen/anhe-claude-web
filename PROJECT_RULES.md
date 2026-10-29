@@ -210,6 +210,21 @@ stdin 侧：`interrupt`、`stop_task`、`send_task_message`、`set_permission_mo
 `set_max_thinking_tokens`、`set_color`、`mcp_toggle`、`message_rated`、`side_question`、`rewindFiles`、`ui_*`
 另有 `control_cancel_request`（宿主取消已发出的请求）、`request_user_dialog`（`dialog_kind` + `payload`）。
 
+**`interrupt` 的回执形状（实测）**：
+
+```json
+{"type":"control_response","response":{"subtype":"success","request_id":"p1","response":{"still_queued":[]}}}
+```
+
+两个坑：
+
+- `request_id` 回显在 `response.response` 那一层，**不在顶层**。按顶层去读会永远拿到
+  `undefined`，误以为没回执。
+- 这个 `success` 只说明**请求被收下**，不代表已经停。停没停要看随后的 `result`
+  （`terminal_reason` / `num_turns`）。
+- `--input-format stream-json` 下 CLI **要等 stdin 上第一条消息才开始干活**，
+  不发 prompt 就永远没有 `system:init`。所有控制探针都得先写一条 prompt。
+
 ### 11. 模型列表全部动态读
 
 - `system:init.model` = 当前实际生效模型
