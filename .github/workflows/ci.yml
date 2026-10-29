@@ -5,7 +5,7 @@ name: CI
 # secrets —— 泄露一次就得换。所以 accept 只在本地 `pnpm accept` 跑，由人盯着看。
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
