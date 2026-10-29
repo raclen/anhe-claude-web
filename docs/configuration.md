@@ -24,6 +24,7 @@
 | `ANHE_CLAUDE_WEB_STATIC_DIR` | 自动探测 `web/dist` | 前端构建产物位置。非空即启用静态托管，空串强制只跑 API |
 | `ANHE_CLAUDE_WEB_IDLE_MS` | `600000` | 会话空闲多久后回收其 `claude` 子进程 |
 | `ANHE_CLAUDE_WEB_MAX_SESSIONS` | `8` | 同时存活的 `claude` 子进程上限 |
+| `ANHE_CLAUDE_WEB_SETTINGS` | 空（不传） | 启动 `claude` 时额外传 `--settings <path>`。**必须用它换上游**：`settings.json` 的 `env` 优先级高于进程环境变量和 `--model`，而且 `--settings` 是**合并**不是替换 |
 | `CLAUDE_CODE_PATH` | 自动探测 | 指定 Claude Code 可执行文件。自动探测失败时用，见下 |
 
 ## 关于 `CLAUDE_CODE_PATH`
