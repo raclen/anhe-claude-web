@@ -33,11 +33,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anhe-etf/anhe-claude-web.git"
+    "url": "git+https://github.com/raclen/anhe-claude-web.git"
   },
-  "homepage": "https://github.com/anhe-etf/anhe-claude-web#readme",
+  "homepage": "https://github.com/raclen/anhe-claude-web#readme",
   "bugs": {
-    "url": "https://github.com/anhe-etf/anhe-claude-web/issues"
+    "url": "https://github.com/raclen/anhe-claude-web/issues"
   },
   "publishConfig": {
     "access": "public",
