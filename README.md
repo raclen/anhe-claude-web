@@ -174,7 +174,7 @@ pnpm accept       # 端到端验收（52 项断言，需要能用的 claude）
 | 项 | 值 |
 |---|---|
 | npm | https://www.npmjs.com/package/anhe-claude-web |
-| 最新版本 | `0.1.0` |
+| 最新版本 | `0.1.1` |
 | 实测基线 | `@anthropic-ai/claude-code@2.1.309` |
 | 许可 | MIT |
 

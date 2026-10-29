@@ -19,9 +19,15 @@ export const STORE_FILE = join(DATA_DIR, "store.json");
 /**
  * HTTP 端口。
  *
- * 开发模式下这里只有 API —— Vite 占着浏览器那侧，把 `/api` 反代过来。
- * 发布版同一个服务同时回答两者，所以这就是你打开的地址；CLI 默认给 5419，
- * 与 `pnpm dev` 时地址栏里的数字一致。
+ * 开发模式下这里只有 API —— Vite 占着浏览器那侧（5519），把 `/api` 反代到这里。
+ * 发布版同一个服务同时回答前端与 API，所以这就是你打开的地址。
+ *
+ * 默认值实际来自两处：`cli/bin.js` 会显式传 `--port`（默认 5419），
+ * 所以发布版永远是 5419。下面这个 4419 只在「直接跑 `tsx src/index.ts`」时生效，
+ * 也就是 `pnpm dev` 的后端那一侧；`web/vite.config.ts` 的代理目标跟着它走。
+ *
+ * 两个数字不同是故意的：开发时不该占用发布版端口，否则本地装过全局包的人
+ * 一跑 `pnpm dev` 就会撞端口。
  */
 export const PORT = Number(process.env.ANHE_CLAUDE_WEB_PORT ?? 4419);
 

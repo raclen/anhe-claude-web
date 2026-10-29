@@ -107,8 +107,9 @@
 
 ## 分发相关
 
-- **npm 上会看到一个 `0.0.0-stage` 版本。** 这是 npm 的 staged publishing 占位包，
-  不是正式版本，也不是发错了。`latest` 指向真正的版本。详见
+- **npm 上会看到一个 `0.0.0-stage` 版本。** 这是 npm 的 staged publishing 占位包
+  （337 字节的壳），不是正式版本，也不是发错了。`latest` 指向真正的版本，
+  `npm i anhe-claude-web` 不会装到它。它删不掉，放着不管就行。详见
   [release.md](./release.md)。
 - **包不附带 Claude Code，也不附带任何模型。** `npx anhe-claude-web` 装下来的只有本项目的
   约 860 kB 代码；`claude` 得你自己装，上游得你自己配。

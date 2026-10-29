@@ -198,6 +198,23 @@ curl -s https://registry.npmjs.org/anhe-claude-web | head -c 400
 curl -s -o /dev/null -w "%{http_code}\n" https://www.npmjs.com/package/anhe-claude-web
 ```
 
+#### `0.0.0-stage` 删不掉，也不影响
+
+实测（2026-10-29）：
+
+```sh
+npm unpublish anhe-claude-web@0.0.0-stage
+# → 403 Granular access tokens that bypass two-factor authentication may not perform this action.
+```
+
+Bypass-2FA 的 token 不能做 unpublish。要删得用本人 2FA 手动验证，或去
+网页 `Settings → Staged Packages`——但那里通常是空的，因为这个版本不是
+「等审批的暂存版」，而是 npm 为 staged publishing 流程留的**占位元数据**
+（337 字节的壳，不是真实的包内容）。
+
+**它就是历史记录里的一个名字，`latest` 不指向它、`npm i anhe-claude-web`
+不会装到它。放着不管就行。**
+
 ### 最终验收：从公共 registry 全新装一次
 
 ```sh
