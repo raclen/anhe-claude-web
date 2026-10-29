@@ -1,6 +1,6 @@
 {
   "name": "anhe-claude-web",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Local web UI for the Claude Code CLI you already have installed — streamed chat, tool calls, permission modes, session resume",
   "license": "MIT",
   "type": "module",
