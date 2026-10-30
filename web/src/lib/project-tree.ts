@@ -1,19 +1,25 @@
 import type { ProjectView } from "./types.ts";
 
-/** Paths arrive from the server as POSIX paths (this app targets macOS/Linux). */
-const sep = "/";
-
 export interface ProjectNode {
   project: ProjectView;
   children: ProjectNode[];
   depth: number;
 }
 
+function normalizePath(p: string): string {
+  return p.split(/[\\\/]+/).join("/").replace(/\/+$/, "");
+}
+
 /** True when `ancestor` is a strict directory ancestor of `descendant`. */
 function isAncestor(ancestor: string, descendant: string): boolean {
-  if (ancestor === descendant) return false;
-  const prefix = ancestor.endsWith(sep) ? ancestor : `${ancestor}${sep}`;
-  return descendant.startsWith(prefix);
+  const a = normalizePath(ancestor);
+  const d = normalizePath(descendant);
+  const isWin = /^[a-zA-Z]:\//.test(a) || /^[a-zA-Z]:\//.test(d);
+  const left = isWin ? a.toLowerCase() : a;
+  const right = isWin ? d.toLowerCase() : d;
+  if (left === right) return false;
+  const prefix = `${left}/`;
+  return right.startsWith(prefix);
 }
 
 /**

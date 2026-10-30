@@ -33,6 +33,8 @@ export interface ComposerApi {
   ensureLive(): Promise<void>;
   /** Switch the session's model. Resolves once the server confirmed it. */
   selectModel(provider: string, id: string): Promise<void>;
+  /** Switch the session's thinking intensity level. */
+  selectThinkingLevel(level: string): Promise<void>;
 }
 
 /**
@@ -63,6 +65,11 @@ export function useComposerState({ sessionPath, projectId }: ComposerSource): Co
     appStore.subscribe,
     () => appStore.get().newSessionModel,
     () => appStore.get().newSessionModel,
+  );
+  const newSessionThinkingLevel = useSyncExternalStore(
+    appStore.subscribe,
+    () => appStore.get().newSessionThinkingLevel,
+    () => appStore.get().newSessionThinkingLevel,
   );
   /** What the current state belongs to: a session path, or `project:<id>`. */
   const sourceKey = sessionPath ?? (projectId === null ? null : `project:${projectId}`);
@@ -153,7 +160,7 @@ export function useComposerState({ sessionPath, projectId }: ComposerSource): Co
     }
 
     const path = sessionPath;
-    if (stateRef.current?.live === true) return;
+    // 进程驻留不代表上下文查询成功；再次打开面板仍需刷新，允许失败后重试。
     const pending = inflightRef.current;
     if (pending !== null) return pending;
 
@@ -186,11 +193,31 @@ export function useComposerState({ sessionPath, projectId }: ComposerSource): Co
     [sessionPath, apply],
   );
 
+  const selectThinkingLevel = useCallback(
+    async (level: string): Promise<void> => {
+      const path = sessionPath;
+      if (path === null) {
+        actions.setNewSessionThinkingLevel(level);
+        return;
+      }
+      try {
+        apply(path, await api.setSessionThinkingLevel(path, level));
+      } catch (err) {
+        actions.setNotice((err as Error).message);
+      }
+    },
+    [sessionPath, apply],
+  );
+
   /** The user's pick wins over pi's default until the session exists. */
   const overridden =
-    sessionPath === null && state !== null && newSessionModel !== null
-      ? { ...state, model: newSessionModel }
+    sessionPath === null && state !== null
+      ? {
+          ...state,
+          ...(newSessionModel !== null ? { model: newSessionModel } : {}),
+          ...(newSessionThinkingLevel !== null ? { thinkingLevel: newSessionThinkingLevel } : {}),
+        }
       : state;
 
-  return { state: overridden, modelsLoading, ensureLive, selectModel };
+  return { state: overridden, modelsLoading, ensureLive, selectModel, selectThinkingLevel };
 }

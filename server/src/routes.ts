@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { pipeline } from "node:stream/promises";
@@ -78,18 +79,22 @@ import {
 } from "./registry.ts";
 import { PERMISSION_MODES } from "./agent/controls.ts";
 import { locateClaudeCli } from "./agent/locate.ts";
-import { configSummary, listModels, readSettings } from "./agent/models.ts";
+import {
+  handlePermissionMcpMessage,
+  PERMISSION_MCP_PATH,
+  RELAY_QUERY_KEY,
+} from "./permission-relay.ts";
+import { configSummary, listModels, readSettings, saveEffortLevel } from "./agent/models.ts";
 import { deleteSession } from "./session-delete.ts";
 import {
   assertAllowedSessionPath,
   draftProjectPath,
   getSessionRoot,
   isDraftPath,
-  makeDraftPath,
   sessionDirFor,
 } from "./session-path.ts";
 import { readSessionSnapshot } from "./session-reader.ts";
-import { listSessions } from "./sessions.ts";
+import { listSessions, invalidateSessionCache } from "./sessions.ts";
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -471,7 +476,8 @@ function assertLocalRequest(req: IncomingMessage): void {
  * 从路径解码。
  */
 async function sessionCwd(sessionPath: string): Promise<string> {
-  const { createReadStream } = await import("node:fs");
+  const { createReadStream, existsSync } = await import("node:fs");
+  if (!existsSync(sessionPath)) return "";
   const { createInterface } = await import("node:readline");
   const stream = createReadStream(sessionPath, { encoding: "utf8" });
   const reader = createInterface({ input: stream, crlfDelay: Infinity });
@@ -504,6 +510,36 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
   const route = (method: string, path: string, handler: Handler): void => {
     routes.push({ method, segments: path.split("/").filter(Boolean), handler });
   };
+
+  /**
+   * The built-in MCP permission relay's endpoint.
+   *
+   * A route rather than a branch in the dispatcher below, so it gets the same
+   * Host check, body limit and error mapping as every other endpoint. The CLI
+   * is the only caller: it reads the URL out of the `--mcp-config` file this
+   * server wrote when it spawned the session, so it already knows which relay
+   * it is talking to.
+   */
+  /**
+   * CLI 对 MCP 端点会先做一次 `GET`（`accept: text/event-stream`）探测长连接。
+   * 这里只实现 POST，回 405 让它明确「不支持」并停止重试 —— 回 404 会被当成
+   * 端点不存在，触发反复重连。
+   */
+  route("GET", PERMISSION_MCP_PATH, ({ res }) => {
+    res.writeHead(405, { allow: "POST" }).end();
+  });
+
+  route("POST", PERMISSION_MCP_PATH, async ({ res, query, body }) => {
+    const reply = await handlePermissionMcpMessage(body, (args) =>
+      registry.askByRelay(query.get(RELAY_QUERY_KEY) ?? "", args),
+    );
+    if (reply.kind === "accepted") {
+      // 通知没有答案可给；MCP 的 streamable HTTP 用 202 + 空体表示收到了。
+      res.writeHead(202).end();
+      return;
+    }
+    json(res, 200, reply.body);
+  });
 
   /**
    * 校验一个会话地址。
@@ -550,19 +586,16 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
         registry.touch(sessionPath);
         return existing;
       }
-      // 这个 draft 键可能已经「长大」成真实 jsonl 了（第一条消息发出去之后，
-      // 句柄的键就迁到了 `<...>.jsonl`）。此时用户手里的 draft 路径仍然是有效的
-      // 会话身份，要按项目路径把它找回来，不能当成新会话再开一个进程。
+      // 句柄已经不在了（空闲回收 / 崩溃）。**按原键重开，不要拿项目里随便一个
+      // 活会话顶上。** 这里曾经用 `registry.findLive(projectPath)` 兜底，而那会
+      // 返回用户正开着的、聊了很久的那个会话 —— 于是 draft 键上的消息被送进别人的
+      // 对话里，且前端因为订阅键不同而一条事件都收不到。
+      //
+      // draft 本来就是「还没说过话」的会话：它没有 jsonl、没有历史可丢，所以重开
+      // 一个空进程在语义上完全等价。若它其实已经「长大」成真实 jsonl，说明句柄曾
+      // 收到过 `system:init`，那样 `registry.get()` 会经别名表命中，走不到这里。
       const projectPath = draftProjectPath(sessionPath);
-      const live = registry.findLive(projectPath);
-      if (live !== undefined) {
-        registry.touch(live.sessionPath);
-        return live;
-      }
-      const handle = await registry.open(projectPath);
-      // 重新按 draft 键登记，让 `handle.sessionPath` 在这里就等于前端手里的路径。
-      registry.alias(handle, sessionPath);
-      return handle;
+      return await registry.create(projectPath, { draftKey: sessionPath, spare: false });
     }
 
     // cwd 一律从 jsonl 行内读，不用目录名反推（slug 不可逆）。
@@ -587,6 +620,9 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
       // unknown command name, say — not a broken process. Killing a healthy pi
       // process over a typo would cost a 1.6s respawn on the next request.
       if (err instanceof HttpError) throw err;
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new HttpError(404, `会话文件不存在：${(err as Error).message}`);
+      }
       registry.markDead(handle.sessionPath);
       throw new HttpError(502, `pi rpc failed: ${(err as Error).message}`);
     }
@@ -1153,24 +1189,49 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
     }
     const project = await getProject(projectId);
     const model = optionalModel(payload);
+    const thinkingLevel = typeof payload.thinkingLevel === "string" ? payload.thinkingLevel : undefined;
+    // 新会话页上选的权限模式。不传就交给 CLI 自己的默认（Manual）——
+    // 默认值永远是 `default`，这是 SECURITY.md 的硬边界。
+    const requestedMode = payload.permissionMode;
+    if (requestedMode !== undefined && !(PERMISSION_MODES as readonly string[]).includes(String(requestedMode))) {
+      throw badRequest(
+        `permissionMode 必须是 ${PERMISSION_MODES.join(" / ")} 之一（收到 ${String(requestedMode)}）`,
+      );
+    }
+    const permissionMode = requestedMode === undefined ? undefined : (requestedMode as PermissionMode);
 
     // A prewarmed process has already paid pi's cold start, so it can be
     // handed over without waiting. Claiming it also frees the slot, so warm
     // the next one immediately to keep back-to-back "new session" instant.
     /**
-     * 返回的 `sessionPath` 在会话落盘之前是 `draft:<项目路径>`。
+     * 返回的 `sessionPath` 在会话落盘之前是 `draft:<token>|<项目路径>`。
      *
      * 为什么不是 jsonl 路径：实测 `system:init` 要到**第一条消息之后**才发，
      * 而会话 id（也就决定了文件名）只在 init 里出现。所以「刚新建、还没说话」的
      * 那一小段时间里，真实路径根本不存在。给一个 draft 键，前端照常把消息发给它，
      * `openSession` 会把它解析成项目并沿用同一个进程；等 init 到达、文件落盘后，
      * registry 把句柄迁到真路径上。
+     *
+     * **键里的 token 必须来自刚认领/刚起的那个句柄**，不能在这里临时生成：
+     * 前端拿着这个键订阅事件、发第一条消息，`registry.get()` 必须能查回同一个进程。
+     * 用「本项目任意活会话」的旧键会让新消息落进别人的对话（见 `claimPrewarmed`）。
      */
     const claimed = registry.claimPrewarmed(project.path);
     if (claimed) {
       void registry.prewarm(project.path);
+      // 预热进程是用默认模式起的，所以模式要在认领之后补一次切换。
+      if (permissionMode !== undefined) {
+        registry.setPermissionMode(claimed.sessionPath, permissionMode);
+      }
+      if (thinkingLevel !== undefined) {
+        await claimed.client.setThinkingLevel(thinkingLevel).catch(() => undefined);
+        const chosenModel = model?.id ?? (await readSettings()).model ?? null;
+        if (chosenModel) {
+          void saveEffortLevel(chosenModel, thinkingLevel);
+        }
+      }
       json(res, 201, {
-        sessionPath: makeDraftPath(project.path),
+        sessionPath: claimed.sessionPath,
         sessionId: "",
         projectPath: project.path,
         prewarmed: true,
@@ -1179,9 +1240,16 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
       return;
     }
 
-    const handle = await registry.open(project.path);
+    const handle = await registry.create(project.path, { permissionMode });
+    if (thinkingLevel !== undefined) {
+      await handle.client.setThinkingLevel(thinkingLevel).catch(() => undefined);
+      const chosenModel = model?.id ?? (await readSettings()).model ?? null;
+      if (chosenModel) {
+        void saveEffortLevel(chosenModel, thinkingLevel);
+      }
+    }
     json(res, 201, {
-      sessionPath: makeDraftPath(handle.projectPath),
+      sessionPath: handle.sessionPath,
       sessionId: "",
       projectPath: handle.projectPath,
       prewarmed: false,
@@ -1334,6 +1402,29 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
     json(res, 200, await liveComposer(handle));
   });
 
+  /**
+   * Switch the thinking level of a session.
+   */
+  route("POST", "/api/sessions/:id/thinking-level", async ({ res, params, body }) => {
+    const sessionPath = allowedPath(params.id!);
+    const payload = asObject(body);
+    const level = requireString(payload, "level");
+    const handle = await openSession(sessionPath);
+
+    try {
+      await handle.client.setThinkingLevel(level);
+      const currentModel = handle.initModel ?? (await readSettings()).model ?? null;
+      if (currentModel) {
+        void saveEffortLevel(currentModel, level);
+      }
+      registry.touch(handle.sessionPath);
+    } catch (err) {
+      throw badRequest(`无法切换思考强度到 ${level}：${(err as Error).message}`);
+    }
+
+    json(res, 200, await liveComposer(handle));
+  });
+
   route("POST", "/api/sessions/:id/prompt", async ({ res, params, body }) => {
     const sessionPath = allowedPath(params.id!);
     const { message, images } = messageWithImages(asObject(body));
@@ -1360,8 +1451,10 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
 
   route("POST", "/api/sessions/:id/abort", async ({ res, params }) => {
     const sessionPath = allowedPath(params.id!);
-    const handle = await openSession(sessionPath);
-    await callClient(handle, () => handle.client.abort());
+    const live = registry.get(sessionPath);
+    if (live !== undefined) {
+      await callClient(live, () => live.client.abort());
+    }
     json(res, 200, { ok: true });
   });
 
@@ -1573,9 +1666,21 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
     if (typeof name !== "string") throw badRequest("name is required");
     if (!existsSync(sessionPath)) throw notFound("会话文件不存在");
     const trimmed = name.trim();
-    // Claude Code 的 jsonl 里没有「会话名」这个概念，所以手动标题存在本项目
-    // 自己的 store 里（`~/.anhe-claude-web`），绝不写 `~/.claude`。
+    // 写入本地 store 的同时，将 custom-title 规范追加写回 jsonl，与 VS Code 插件完全互通
     await setSessionOverride(sessionPath, { name: trimmed });
+    if (trimmed.length > 0) {
+      try {
+        const id = (sessionPath.split(/[/\\]/).pop() ?? "").replace(/\.jsonl$/, "");
+        await appendFile(
+          sessionPath,
+          JSON.stringify({ type: "custom-title", sessionId: id, customTitle: trimmed }) + "\n",
+          "utf8",
+        );
+      } catch {
+        /* 尽力写入，不影响本地覆盖生效 */
+      }
+    }
+    invalidateSessionCache();
     bus.publish({ type: "sessions_changed", projectPath: "" });
     json(res, 200, { ok: true, name: trimmed });
   });
@@ -1585,6 +1690,7 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
     const { hidden } = asObject(body);
     if (typeof hidden !== "boolean") throw badRequest("hidden must be a boolean");
     const override = await setSessionOverride(sessionPath, { hidden });
+    invalidateSessionCache();
     bus.publish({ type: "sessions_changed", projectPath: "" });
     json(res, 200, { ok: true, override });
   });
@@ -1882,6 +1988,15 @@ export function createRequestHandler(deps: RouteDeps): (req: IncomingMessage, re
       `event: hello\ndata: ${JSON.stringify({
         connectionId,
         activeSessions: registry.list().map((handle) => handle.sessionPath),
+        // **正在跑的那几个。** 只给 `activeSessions`（活进程列表）不够：一个句柄
+        // 空闲驻留时也在这个列表里，前端拿它推不出「那一轮还在动」。而运行标记
+        // 只活在浏览器内存里，刷新页面就没了 —— 于是卡在 408 退避重试里的回合
+        // 既没有「停止生成」按钮，也没有任何 `agent_start` 会再发一遍（它早就发过，
+        // 连接不在的时候）。重连 / 刷新后的界面就这样一直等到 CLI 自己放弃重试。
+        runningSessions: registry
+          .list()
+          .filter((handle) => handle.streaming)
+          .map((handle) => handle.sessionPath),
       })}\n\n`,
     );
 

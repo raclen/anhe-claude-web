@@ -126,6 +126,8 @@ export interface ComposerContext {
   tokens: number | null;
   contextWindow: number;
   percent: number | null;
+  /** 实时 CLI 查询或最近一次回复的历史用量；历史用量不等于当前窗口占用。 */
+  source: "live" | "usage";
 }
 
 /** 输入栏要渲染的全部状态。 */
@@ -134,4 +136,5 @@ export interface ComposerState {
   model: ComposerModel | null;
   models: ComposerModel[] | null;
   context: ComposerContext | null;
+  thinkingLevel?: string | null;
 }

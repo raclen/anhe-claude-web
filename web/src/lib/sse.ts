@@ -81,11 +81,15 @@ export function connectEvents(): () => void {
   });
 
   source.addEventListener("hello", (raw) => {
-    const data = parse<{ connectionId?: string; activeSessions: string[] }>(raw);
+    const data = parse<{
+      connectionId?: string;
+      activeSessions: string[];
+      runningSessions?: string[];
+    }>(raw);
     if (!data) return;
     // A reconnect may find processes that died while the stream was down; the
     // run marks they left behind are retired against this fresh list.
-    actions.reconcileActiveSessions(data.activeSessions);
+    actions.reconcileActiveSessions(data.activeSessions, data.runningSessions);
     connectionId = typeof data.connectionId === "string" ? data.connectionId : null;
     // A reconnect learns a fresh id, so the current session has to be declared
     // again for the new stream.
@@ -141,6 +145,11 @@ export function connectEvents(): () => void {
     // A session that never got a first reply has no file, so it is gone for
     // good; its provisional row must go with it.
     actions.forgetUnsavedSession(data.sessionPath);
+    // Emit agent_settled to guarantee that any active conversation view clears streaming state.
+    actions.emitSessionEvent(data.sessionPath, {
+      type: "agent_settled",
+      reason: data.reason,
+    });
   });
 
   source.addEventListener("session_external_changed", (raw) => {

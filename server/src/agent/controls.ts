@@ -8,6 +8,7 @@
  * 证据是 `claude.exe` 里 bun 打包的那份 JS 中的 zod schema，加上实跑
  * `--input-format stream-json` 的原始输出。改动前先看 PROJECT_RULES.md 第一~十节。
  */
+import type { ComposerContext } from "./types.ts";
 
 /** 权限模式六态。`manual` 只是 `default` 的展示别名，不是第七个值。 */
 export const PERMISSION_MODES = [
@@ -217,23 +218,113 @@ export function fallbackRule(request: CanUseToolRequest): PermissionRule {
 // 宿主 → CLI 的其它控制命令
 // ---------------------------------------------------------------------------
 
+let nextControlRequestId = 1;
+export function nextRequestId(prefix = "req"): string {
+  return `${prefix}_${Date.now()}_${nextControlRequestId++}`;
+}
+
 /** 中断当前轮。 */
-export function interruptCommand(): Record<string, unknown> {
-  return { type: "control_request", request: { subtype: "interrupt" } };
+export function interruptCommand(requestId = nextRequestId("abort")): Record<string, unknown> {
+  return { type: "control_request", request_id: requestId, request: { subtype: "interrupt" } };
 }
 
-export function setPermissionModeCommand(mode: PermissionMode): Record<string, unknown> {
-  return { type: "control_request", request: { subtype: "set_permission_mode", mode } };
-}
-
-export function setModelCommand(model: string): Record<string, unknown> {
-  return { type: "control_request", request: { subtype: "set_model", model } };
-}
-
-export function setMaxThinkingTokensCommand(tokens: number | null): Record<string, unknown> {
+export function setPermissionModeCommand(
+  mode: PermissionMode,
+  requestId = nextRequestId("perm"),
+): Record<string, unknown> {
   return {
     type: "control_request",
+    request_id: requestId,
+    request: { subtype: "set_permission_mode", mode },
+  };
+}
+
+export function setModelCommand(
+  model: string,
+  requestId = nextRequestId("model"),
+): Record<string, unknown> {
+  return {
+    type: "control_request",
+    request_id: requestId,
+    request: { subtype: "set_model", model },
+  };
+}
+
+/** 思考强度档位。 */
+export const THINKING_LEVELS = ["auto", "off", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+export function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value);
+}
+
+/** 思考档位对应的 token 预算（null 表示 auto，让上游根据模型默认决定）。 */
+export function thinkingTokensForLevel(level: string): number | null {
+  switch (level) {
+    case "off":
+      return 0;
+    case "low":
+      return 1024;
+    case "medium":
+      return 4096;
+    case "high":
+      return 8192;
+    case "xhigh":
+      return 16384;
+    case "max":
+      return 32768;
+    case "auto":
+    default:
+      return null;
+  }
+}
+
+export function setMaxThinkingTokensCommand(
+  tokens: number | null,
+  requestId = nextRequestId("think"),
+): Record<string, unknown> {
+  return {
+    type: "control_request",
+    request_id: requestId,
     request: { subtype: "set_max_thinking_tokens", max_thinking_tokens: tokens },
+  };
+}
+
+/**
+ * 查询当前上下文占用。
+ *
+ * `detail: "summary"` 返回 `{ totalTokens, maxTokens, rawMaxTokens,
+ * percentage, categories }`，与终端 `/context` 同源，使用 CLI 的本地估算，
+ * 不发聊天消息。分母直接用 CLI 返回的 `maxTokens`，不猜模型容量，也不假设
+ * `rawMaxTokens` 与它必然不同（2.1.309 实现中两者可能相等）。
+ *
+ * settings.json 通常没有窗口字段，jsonl 也不记它，而 result 的模型窗口
+ * 可能为空，所以优先使用这条控制查询。
+ */
+export function getContextUsageCommand(
+  detail: "summary" | "full" = "summary",
+  requestId = nextRequestId("ctx"),
+): Record<string, unknown> {
+  return {
+    type: "control_request",
+    request_id: requestId,
+    request: { subtype: "get_context_usage", detail },
+  };
+}
+
+/** 控制回执里的上下文摘要 → 前端契约，错误或缺失字段不伪装成 0。 */
+export function contextUsageFromResponse(payload: Record<string, unknown>): ComposerContext | null {
+  if (payload.subtype !== "success") return null;
+  const raw = payload.response;
+  if (typeof raw !== "object" || raw === null) return null;
+  const { totalTokens, maxTokens } = raw as Record<string, unknown>;
+  if (typeof totalTokens !== "number" || !Number.isFinite(totalTokens) || totalTokens < 0) return null;
+  if (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens <= 0) return null;
+  return {
+    tokens: totalTokens,
+    contextWindow: maxTokens,
+    percent: (totalTokens / maxTokens) * 100,
+    source: "live",
   };
 }
 

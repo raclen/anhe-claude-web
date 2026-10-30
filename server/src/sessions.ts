@@ -6,6 +6,7 @@
  * 这样 `hidden` 是 UI 的偏好，而不是 Claude Code 的事实。
  */
 import {
+  invalidateSessionCache,
   listSessions as listFromClaude,
   type ListSessionsOptions,
   type SessionListPage,
@@ -16,13 +17,16 @@ import { getSessionOverrides } from "./projects.ts";
 import type { SessionOverride } from "./store.ts";
 
 export type { ListSessionsOptions, SessionListPage, SessionView, TitleSource };
+export { invalidateSessionCache };
 
-/** 把 store 的隐藏标记叠到派生视图上。 */
+/** 把 store 的自定义名称与隐藏标记叠到派生视图上。 */
 export function toSessionView(
   view: SessionView,
   override: SessionOverride | undefined,
 ): SessionView {
-  return { ...view, hidden: override?.hidden === true };
+  const custom = override?.name?.trim();
+  const title = custom && custom.length > 0 ? custom : view.title;
+  return { ...view, title, hidden: override?.hidden === true };
 }
 
 /**

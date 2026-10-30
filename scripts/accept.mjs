@@ -212,6 +212,7 @@ async function startServer(home, workDir, settingsPath) {
       ...process.env,
       HOME: home,
       USERPROFILE: home,
+      ANHE_CLAUDE_WEB_HOME: join(home, ".anhe-claude-web"),
       ANHE_CLAUDE_WEB_PORT: String(PORT),
       ANHE_CLAUDE_WEB_OPEN: "0",
       // 隔离 HOME 意味着拿不到用户自己的 `~/.claude/settings.json`，
@@ -299,6 +300,7 @@ async function main() {
   }
 
   let workDir = null;
+  let registeredProjectId = null;
   try {
     // === A. 基础元信息 ======================================================
     console.log("A. 基础元信息");
@@ -346,6 +348,7 @@ async function main() {
     assert("创建/复用项目", typeof project?.id === "string", project?.id);
     assertEq("项目路径原样返回", project?.path, workDir);
     const projectId = project.id;
+    registeredProjectId = projectId;
 
     const projects = await get("/api/projects", base);
     assert("项目出现在列表里", projects.some((p) => p.id === projectId));
@@ -499,6 +502,7 @@ async function main() {
     assert("长任务已开跑", started, started ? "已收到 message_start" : "90s 内没有开跑");
 
     const beforeInterrupt = Date.now();
+    const interruptMark = stream.events.length;
     const abortRes = await post(`/api/sessions/${enc(sessionPath)}/abort`, {}, base);
     assert("运行中 abort 返回成功", abortRes?.ok === true, JSON.stringify(abortRes));
 
@@ -506,7 +510,7 @@ async function main() {
     let settled = false;
     try {
       await stream.waitFor(
-        (r) => r.seq >= abortMark && sessionEvent(sessionPath, "agent_settled")(r),
+        (r) => r.seq >= interruptMark && sessionEvent(sessionPath, "agent_settled")(r),
         90_000,
       );
       settled = true;
@@ -515,6 +519,68 @@ async function main() {
     }
     const stopMs = Date.now() - beforeInterrupt;
     assert("打断后很快就收尾", settled && stopMs < 60_000, `${stopMs}ms`);
+
+    /**
+     * 新连接必须能知道「哪一轮还在跑」。
+     *
+     * 运行标记只活在浏览器内存里，刷新页面就没了；如果 `hello` 只报活进程，
+     * 卡在退避重试里的回合在刷新后既没有停止按钮也没有任何事件 —— 只能干等
+     * CLI 自己放弃。所以这里开**第二条** SSE，断言它在握手帧里把运行中的会话
+     * 点出来（第一条连接此时已经补发了新消息并跑了起来，见下一段）。
+     */
+    const beforeSecondProbe = stream.events.length;
+    await post(
+      `/api/sessions/${enc(sessionPath)}/prompt`,
+      { message: "再跑一个长任务：`node -e \"setTimeout(()=>{},45000)\"`，结束后告诉我。" },
+      base,
+    );
+    let secondRunning = false;
+    try {
+      await stream.waitFor(
+        (r) => r.seq >= beforeSecondProbe && r.payload?.event?.type === "agent_start",
+        60_000,
+      );
+      secondRunning = true;
+    } catch {
+      secondRunning = false;
+    }
+    assert("第二轮已开跑", secondRunning, secondRunning ? "已收到 agent_start" : "60s 内没有开跑");
+
+    const fresh = openStream(base);
+    try {
+      await fresh.ready;
+      let hello = null;
+      try {
+        hello = await fresh.waitFor((r) => r.name === "hello", 15_000);
+      } catch {
+        hello = null;
+      }
+      const running = hello?.payload?.runningSessions;
+      assert(
+        "hello 报告运行中的会话",
+        Array.isArray(running) && running.includes(sessionPath),
+        JSON.stringify(running ?? hello?.payload ?? null),
+      );
+      assert(
+        "hello 报告活进程列表",
+        Array.isArray(hello?.payload?.activeSessions) &&
+          hello.payload.activeSessions.includes(sessionPath),
+        JSON.stringify(hello?.payload?.activeSessions ?? null),
+      );
+    } finally {
+      fresh.close();
+    }
+
+    // 收掉这一轮，后面的分组不该看见一个还在跑的会话。
+    await post(`/api/sessions/${enc(sessionPath)}/abort`, {}, base).catch(() => undefined);
+    try {
+      await stream.waitFor(
+        (r) => r.seq >= beforeSecondProbe && sessionEvent(sessionPath, "agent_settled")(r),
+        60_000,
+      );
+    } catch {
+      /* 收不掉也不是这一组要断言的事 */
+    }
 
     // === H. usage 与统计 ====================================================
     console.log("\nH. 用量统计");
@@ -613,6 +679,15 @@ async function main() {
     }
   } finally {
     stream.close();
+    if (registeredProjectId && base) {
+      try {
+        await fetch(`${base}/api/projects/${encodeURIComponent(registeredProjectId)}`, {
+          method: "DELETE",
+        });
+      } catch {
+        /* 尽力清理测试注册的工作区 */
+      }
+    }
     if (child) await stopServer(child);
     if (home) {
       try {

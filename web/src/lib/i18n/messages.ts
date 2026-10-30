@@ -28,7 +28,8 @@ export const zhCN = {
   "settings.fontSize.decrease": "减小字号",
   "settings.fontSize.increase": "增大字号",
   "settings.transcript.title": "对话显示",
-  "settings.transcript.description": "选择希望看到多少工具调用细节",
+  "settings.transcript.description":
+    "折叠多少执行过程：简洁把思考与工具调用一起收进「已完成」；标准把工具调用全部平铺、思考折成一张卡片（图标、一行摘要、用时），点开看全文；详细在此基础上把思考正文默认摊开；完全展开再把工具的输入输出也一并摊开",
   "settings.transcript.compact": "简洁",
   "settings.transcript.standard": "标准",
   "settings.transcript.detailed": "详细",
@@ -52,6 +53,15 @@ export const zhCN = {
   "settings.titleModel.description":
     "新会话发出第一条消息时，交给这个模型起一个名字；关闭时用消息本身的前几个词",
   "settings.titleModel.off": "关闭",
+  "settings.install.title": "安装到桌面",
+  "settings.install.description":
+    "把界面装成独立窗口：任务栏有自己的图标，打开时不带地址栏和标签页",
+  "settings.install.action": "安装",
+  "settings.install.manualIos": "在分享菜单里选择「添加到主屏幕」，即可装成独立窗口",
+  "settings.install.manualBrowser": "点地址栏右侧的安装图标，或在浏览器菜单里选「安装 anhe-claude-web」",
+  "settings.install.installed": "已装成独立窗口，当前就在其中运行",
+  "settings.install.unsupported":
+    "当前浏览器不支持安装；Chrome、Edge 或 Safari 的「添加到主屏幕」可以做到",
 
   // --- notifications --------------------------------------------------------
   "notification.taskFinished": "会话任务已完成",
@@ -108,7 +118,7 @@ export const zhCN = {
 
   // --- 权限 -----------------------------------------------------------------
   "permission.mode": "权限模式",
-  "permission.unknown": "权限…",
+  "permission.unknown": "未知模式",
   "permission.unknownTool": "未知工具",
   "permission.deniedBadge": "已拒绝",
   "permission.noReason": "Claude Code 没有给出具体原因。",
@@ -121,12 +131,19 @@ export const zhCN = {
     "开启后，Claude Code 会直接执行所有工具（包括运行命令、写文件），不再询问你。这项设置只对当前会话有效，但风险是实打实的。",
   "permission.cancel": "取消",
   "permission.confirmBypassAction": "我明白，开启",
+  "permission.requestBadge": "等待批准",
+  "permission.requestTitle": "工具调用需要你的批准",
+  "permission.allowOnce": "允许一次",
+  "permission.always": "总是允许",
+  "permission.alwaysHint": "写进 ~/.claude/settings.json 的 permissions.allow，对以后所有会话生效",
+  "permission.deny": "拒绝",
+  "permission.blockedPath": "被挡住的路径：{path}",
   "thinking.title": "思考",
   "turn.processWorked": "已完成",
   // Trailing space on purpose: the elapsed figure is appended straight after,
   // and it is a code-face run rather than part of the sentence.
   "turn.processTook": "已完成，用时 ",
-  "turn.working": "正在努力...",
+  "turn.working": "正在等待模型...",
   "message.stepProcess.thinking": "正在分析请求",
   "message.stepProcess.read": "正在读取文件",
   "message.stepProcess.write": "正在写入文件",
@@ -292,8 +309,10 @@ export const zhCN = {
   "context.unknownValue": "未知",
   "context.used": "已用",
   "context.remaining": "剩余",
-  "context.emptyNote": "这个会话还没有可用的上下文用量。",
-  "context.note": "已用是 pi 的估算：最后一次模型回复上报的用量，加上其后每条消息的字符估算。刚压缩完时会短暂显示为未知，直到下一次回复。",
+  "context.emptyNote": "尚未取得上下文数据。打开面板会向 Claude Code 查询；查询不可用时可稍后重试。",
+  "context.usageOnly": "最近一次回复用量 · {used} tok（历史数据）",
+  "context.usageNote": "历史用量：最近一次模型回复上报的输入、缓存和输出 token，不含其后新增消息，不代表当前上下文占用。窗口仅在已观测或显式配置时展示。",
+  "context.note": "来自 Claude Code 的实时本地估算，与 /context 同源；窗口使用 CLI 返回的容量，可能受自动压缩设置影响。",
 
   // --- time and durations ---------------------------------------------------
   "time.justNow": "刚刚",
@@ -568,7 +587,7 @@ export const zhCN = {
   "settings.mcp.restart": "重启",
   "settings.mcp.restarting": "重启中…",
   "settings.mcp.add": "添加服务器",
-  "settings.mcp.lead": "管理 pi 的 MCP 服务器。新增、修改或删除后需要重启，下一次发消息时生效。",
+  "settings.mcp.lead": "管理 Claude Code 的 MCP 服务器。新增、修改或删除后需要重启，下一次发消息时生效。",
   "settings.mcp.loading": "正在读取 MCP 配置…",
   "settings.mcp.unreadable": "暂时无法读取 MCP 配置。",
   "settings.mcp.errorsTitle": "配置文件里有读不了或不合法的记录，下面这些被跳过了：",
@@ -697,7 +716,8 @@ export const en: Record<MessageKey, string> = {
   "settings.fontSize.decrease": "Decrease font size",
   "settings.fontSize.increase": "Increase font size",
   "settings.transcript.title": "Transcript display",
-  "settings.transcript.description": "How much tool-call detail to show",
+  "settings.transcript.description":
+    "How much process work to fold: Compact tucks thinking and tool calls behind Completed; Standard flattens every tool call and folds thinking into a card (icon, one-line summary, duration) that opens on click; Detailed also opens the reasoning text; Verbose additionally opens every tool's input and output",
   "settings.transcript.compact": "Compact",
   "settings.transcript.standard": "Standard",
   "settings.transcript.detailed": "Detailed",
@@ -723,6 +743,16 @@ export const en: Record<MessageKey, string> = {
   "settings.titleModel.description":
     "Name a new session with this model when its first message arrives; off uses the leading words of that message instead",
   "settings.titleModel.off": "Off",
+  "settings.install.title": "Install to desktop",
+  "settings.install.description":
+    "Run this UI as its own window: its own taskbar icon, no address bar or tabs",
+  "settings.install.action": "Install",
+  "settings.install.manualIos": "Use the share menu's “Add to Home Screen” to install it as a window",
+  "settings.install.manualBrowser":
+    "Click the install icon at the right of the address bar, or pick “Install anhe-claude-web” from the browser menu",
+  "settings.install.installed": "Installed as its own window — this is that window",
+  "settings.install.unsupported":
+    "This browser cannot install it; Chrome, Edge, or Safari's “Add to Home Screen” can",
 
   "notification.taskFinished": "The session task has finished",
 
@@ -775,7 +805,7 @@ export const en: Record<MessageKey, string> = {
 
   // --- permission -----------------------------------------------------------
   "permission.mode": "Permission mode",
-  "permission.unknown": "Permission…",
+  "permission.unknown": "Unknown mode",
   "permission.unknownTool": "Unknown tool",
   "permission.deniedBadge": "Denied",
   "permission.noReason": "Claude Code gave no specific reason.",
@@ -788,6 +818,13 @@ export const en: Record<MessageKey, string> = {
     "Claude Code will run every tool immediately (commands, file writes) without asking you. This applies to the current session, but the risk is real.",
   "permission.cancel": "Cancel",
   "permission.confirmBypassAction": "I understand, enable it",
+  "permission.requestBadge": "Awaiting approval",
+  "permission.requestTitle": "A tool call needs your approval",
+  "permission.allowOnce": "Allow once",
+  "permission.always": "Always allow",
+  "permission.alwaysHint": "Adds a rule to permissions.allow in ~/.claude/settings.json, for every future session",
+  "permission.deny": "Deny",
+  "permission.blockedPath": "Blocked path: {path}",
   "thinking.title": "Thinking",
   "turn.processWorked": "Completed",
   "turn.processTook": "Completed in ",
@@ -948,8 +985,10 @@ export const en: Record<MessageKey, string> = {
   "context.unknownValue": "Unknown",
   "context.used": "Used",
   "context.remaining": "Remaining",
-  "context.emptyNote": "No context usage available for this session yet.",
-  "context.note": "Used is pi's estimate: the usage the last model reply reported, plus a character-based estimate for every message after it. Right after a compaction it shows as unknown until the next reply.",
+  "context.emptyNote": "Context data is not available yet. Opening this panel queries Claude Code; retry later if the query is unavailable.",
+  "context.usageOnly": "Last reply usage · {used} tok (historical)",
+  "context.usageNote": "Historical usage: input, cache and output tokens reported by the last model reply. Later messages are excluded; this is not the current context usage. The window is shown only when observed or explicitly configured.",
+  "context.note": "From Claude Code's live local estimate, the same source as /context. The window is reported by the CLI and may be affected by auto-compaction settings.",
 
   "time.justNow": "just now",
   "time.minutes": "{count}m",
@@ -1204,7 +1243,7 @@ export const en: Record<MessageKey, string> = {
   "settings.mcp.restart": "Restart",
   "settings.mcp.restarting": "Restarting…",
   "settings.mcp.add": "Add server",
-  "settings.mcp.lead": "Manage pi's MCP servers. Adding, changing or removing one needs a restart; it applies with the next message.",
+  "settings.mcp.lead": "Manage Claude Code's MCP servers. Adding, changing or removing one needs a restart; it applies with the next message.",
   "settings.mcp.loading": "Reading MCP config…",
   "settings.mcp.unreadable": "Could not read the MCP config.",
   "settings.mcp.errorsTitle": "Some entries were unreadable or invalid and were skipped:",

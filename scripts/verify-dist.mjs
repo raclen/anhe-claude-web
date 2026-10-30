@@ -11,6 +11,11 @@ const REQUIRED = [
   ["cli/bin.js", "CLI 入口"],
   ["server/build/index.js", "服务端构建产物（pnpm build）"],
   ["web/dist/index.html", "前端构建产物（pnpm build）"],
+  // 「安装到桌面」的两件必需物。缺 manifest 或 sw.js 时浏览器只是不显示安装
+  // 入口，不报错 —— 静默失效的东西必须在发版前就拦住。
+  ["web/dist/manifest.webmanifest", "PWA 清单（安装到桌面）"],
+  ["web/dist/sw.js", "service worker（安装资格）"],
+  ["web/dist/icon-512.png", "应用图标（manifest / 桌面）"],
   ["LICENSE", "许可文本"],
   ["THIRD_PARTY_NOTICES.md", "第三方声明（MIT 义务要求）"],
   ["SECURITY.md", "安全边界"],

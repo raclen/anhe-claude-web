@@ -8,8 +8,9 @@
 .anchor {
   position: relative;
   display: inline-flex;
-  flex: 0 1 auto;
-  min-width: 0;
+  /* 不参与收缩：模式名是当前状态的唯一显示，被压成省略号等于没显示。
+   * 工具栏里让 hint 先让位（它有 flex: 1），而不是把这个按钮挤没。 */
+  flex: none;
 }
 
 .trigger {

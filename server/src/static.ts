@@ -46,6 +46,10 @@ const CONTENT_TYPES: Record<string, string> = {
   ".webp": "image/webp",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
+  // 不带这个映射，`/manifest.webmanifest` 会以 octet-stream 送出去，
+  // Chrome 就不把它当清单解析 —— 表现是「安装」入口永远不出现，
+  // 而控制台只报一条 MIME 类型的提醒，很容易被当成无关噪音。
+  ".webmanifest": "application/manifest+json; charset=utf-8",
 };
 
 const ASSET_DIR = `${sep}assets${sep}`;

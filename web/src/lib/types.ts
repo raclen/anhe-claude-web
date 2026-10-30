@@ -12,7 +12,14 @@ export interface ProjectView {
   exists: boolean;
 }
 
-export type TitleSource = "session" | "firstMessage" | "fallback";
+export type TitleSource =
+  | "session"
+  | "firstMessage"
+  | "fallback"
+  | "summary"
+  | "lastPrompt"
+  | "aiTitle"
+  | "customTitle";
 
 export interface SessionView {
   path: string;
@@ -26,6 +33,7 @@ export interface SessionView {
   modified: string;
   messageCount: number;
   hidden: boolean;
+  gitBranch?: string;
 }
 
 /**
@@ -82,6 +90,15 @@ export interface TextBlock {
 export interface ThinkingBlock {
   type: "thinking";
   thinking: string;
+  /**
+   * 本浏览器实测到这段推理的流式时长（毫秒）。
+   *
+   * 协议里没有逐块的计时：`usage` 是按消息给的，`result` 只报整轮。所以这个字段
+   * 只由 `useConversation` 在 `thinking_start` → `thinking_end` 之间自己记，并且
+   * 只对本次真的看着它流出来的块存在 —— 回读历史会话时它是 `undefined`，思考行
+   * 就不显示时长，而不是拿整轮时间或估算值充数。
+   */
+  thinkingMs?: number;
 }
 
 export interface ToolCallBlock {
@@ -195,6 +212,26 @@ export interface PendingUiDialog {
   request: ExtensionUiRequest;
 }
 
+/**
+ * 服务端还挂着的权限请求（`GET /api/sessions/:id/permissions` 的形状）。
+ *
+ * 与 `useConversation.ts` 里的 `PermissionRequest` 同源，但那个是给组件用的、
+ * 多带了前端自己算的字段；这里是线上的裸形状，刷新页面时按它复原卡片。
+ */
+export interface PendingPermissionEntry {
+  requestId: string;
+  toolName: string;
+  displayName: string;
+  input: Record<string, unknown>;
+  toolUseId: string;
+  description: string | null;
+  blockedPath: string | null;
+  toolKind: string | null;
+  requiresUserInteraction: boolean;
+  requestedAt: number;
+  suggestions: unknown;
+}
+
 export interface SessionEvent {
   type: string;
   [key: string]: unknown;
@@ -203,6 +240,8 @@ export interface SessionEvent {
 export interface RpcSessionState {
   model?: { provider: string; id: string; [key: string]: unknown } | null;
   thinkingLevel: string;
+  /** 会话级权限模式。`system:init.permissionMode` 的权威值。 */
+  permissionMode?: string;
   isStreaming: boolean;
   isCompacting: boolean;
   sessionFile?: string;
@@ -223,12 +262,13 @@ export interface ComposerModel {
   reasoning: boolean;
 }
 
-/** How full the model's context window is, per pi's own estimate. */
+/** CLI 实时上下文查询，或最近一次模型回复的历史用量。 */
 export interface ComposerContext {
-  /** null when the figure is unknown — right after a compaction, say. */
   tokens: number | null;
+  /** 0 表示窗口未知；已知 token 数仍然可以单独展示。 */
   contextWindow: number;
   percent: number | null;
+  source: "live" | "usage";
 }
 
 /**
@@ -244,6 +284,7 @@ export interface ComposerState {
   model: ComposerModel | null;
   models: ComposerModel[] | null;
   context: ComposerContext | null;
+  thinkingLevel?: string | null;
 }
 
 /** One entry in the server-side directory browser. */

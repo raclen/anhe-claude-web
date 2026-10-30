@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { AgentMessage, ContentBlock, Usage } from "./agent/types.ts";
 
@@ -126,7 +126,16 @@ function stripInjectedContext(text: string): string {
   return text
     .replace(/<ide_selection>[\s\S]*?<\/ide_selection>/g, "")
     .replace(/<ide_opened_file>[\s\S]*?<\/ide_opened_file>/g, "")
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, "")
+    .replace(/<command-name>[\s\S]*?<\/command-name>/g, "")
+    .replace(/<command-message>[\s\S]*?<\/command-message>/g, "")
+    .replace(/<command-args>[\s\S]*?<\/command-args>/g, "")
+    .replace(/<command>[\s\S]*?<\/command>/g, "")
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, "")
+    .replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>/g, "")
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
+    .replace(/<system-err>[\s\S]*?<\/system-err>/g, "")
+    .replace(/<system-out>[\s\S]*?<\/system-out>/g, "")
     .trim();
 }
 
@@ -144,6 +153,10 @@ export async function readSessionSnapshot(sessionPath: string): Promise<SessionS
   const messages: AgentMessage[] = [];
   const forkPoints: ForkPoint[] = [];
   let sessionId = "";
+
+  if (!existsSync(sessionPath)) {
+    return { sessionId, messages, forkPoints };
+  }
 
   const stream = createReadStream(sessionPath, { encoding: "utf8" });
   const reader = createInterface({ input: stream, crlfDelay: Infinity });
@@ -204,9 +217,9 @@ export async function readSessionSnapshot(sessionPath: string): Promise<SessionS
       if (type === "user") {
         const blocks = toContentBlocks(content);
         const text = stripInjectedContext(messageText(content));
-        // 只有一条纯文本时保持字符串形状，与前端 `userContent()` 的产出一致。
-        const normalized: string | ContentBlock[] =
-          blocks.length === 1 && blocks[0]?.type === "text" ? text : blocks;
+        // 纯文本消息（单块或 IDE 拼接的多块文本）保持字符串形状，且去掉注入上下文。
+        const isAllText = blocks.length === 0 || blocks.every((b) => b.type === "text");
+        const normalized: string | ContentBlock[] = isAllText ? text : blocks;
         if (typeof normalized === "string" && normalized.length === 0) continue;
         messages.push({ role: "user", content: normalized, timestamp } as AgentMessage);
         forkPoints.push({

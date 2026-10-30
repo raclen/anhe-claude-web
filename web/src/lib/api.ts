@@ -14,6 +14,7 @@ import type {
   McpServerDraft,
   McpView,
   ModelsView,
+  PendingPermissionEntry,
   PendingUiDialog,
   ProjectView,
   ProviderInput,
@@ -247,6 +248,32 @@ export const api = {
     ),
 
   /**
+   * 回答一张权限卡。
+   *
+   * 三个按钮对应三个 `classification`：允许一次 `user_temporary`、
+   * 总是允许 `user_permanent`（会写进 `~/.claude/settings.json` 的
+   * `permissions.allow`）、拒绝 `user_reject`。
+   */
+  answerPermission: (
+    sessionPath: string,
+    requestId: string,
+    classification: "user_temporary" | "user_permanent" | "user_reject",
+  ) =>
+    request<{ ok: true }>(
+      `/api/sessions/${sessionId(sessionPath)}/permissions/${encodeURIComponent(requestId)}`,
+      { method: "POST", body: JSON.stringify({ classification }) },
+    ),
+
+  /**
+   * 当前会话还挂着的权限请求。刷新页面后用它把卡片恢复出来 ——
+   * 否则那条 CLI 的 `tools/call` 还在等，主人却看不到按钮，只能等超时。
+   */
+  getPendingPermissions: (sessionPath: string) =>
+    request<{ pending: PendingPermissionEntry[] }>(
+      `/api/sessions/${sessionId(sessionPath)}/permissions`,
+    ),
+
+  /**
    * CLI 元信息：找到哪个可执行文件、什么版本。
    *
    * 首屏用它决定是显示「准备就绪」还是「请先安装 Claude Code」。
@@ -316,7 +343,12 @@ export const api = {
     );
   },
 
-  createSession: (projectId: string, model?: { provider: string; id: string } | null) =>
+  createSession: (
+    projectId: string,
+    model?: { provider: string; id: string } | null,
+    thinkingLevel?: string | null,
+    permissionMode?: string | null,
+  ) =>
     request<{
       sessionPath: string;
       sessionId: string;
@@ -327,7 +359,14 @@ export const api = {
       modelError?: string;
     }>("/api/sessions", {
       method: "POST",
-      body: JSON.stringify({ projectId, ...(model ? { model } : {}) }),
+      body: JSON.stringify({
+        projectId,
+        ...(model ? { model } : {}),
+        ...(thinkingLevel ? { thinkingLevel } : {}),
+        // 新会话页永远带着一个真实模式（默认就是 `default`），所以这里直接传，
+        // 不再用「有值才传」的写法 —— 那会让界面显示的模式和实际下发的模式分家。
+        ...(permissionMode ? { permissionMode } : {}),
+      }),
     }),
 
   /** Best-effort: starts a pi process ahead of the next "new session". */
@@ -525,8 +564,15 @@ export const api = {
       body: JSON.stringify({ provider, id }),
     }),
 
+  /** Switch the thinking level a session uses. */
+  setSessionThinkingLevel: (sessionPath: string, level: string) =>
+    request<ComposerState>(`/api/sessions/${sessionId(sessionPath)}/thinking-level`, {
+      method: "POST",
+      body: JSON.stringify({ level }),
+    }),
+
   prompt: (sessionPath: string, message: string, images: ImageBlock[] = []) =>
-    request<{ ok: true }>(`/api/sessions/${sessionId(sessionPath)}/prompt`, {
+    request<{ ok: true; sessionPath?: string }>(`/api/sessions/${sessionId(sessionPath)}/prompt`, {
       method: "POST",
       body: JSON.stringify({ message, ...imageField(images) }),
     }),

@@ -33,11 +33,11 @@
   gap: 6px;
 }
 
-/* pi's mark in the running row's icon box — the seat dsh gives its whale tail.
-   It is the brand bitmap now, not a one-colour glyph: the white π still reads
-   at this size, and the tile it sits on is kept visible by the same hairline
-   the sidebar's mark wears (on light it lands on the same black and does
-   nothing). */
+/* The brand mark in the running row's icon box — the seat dsh gives its whale
+   tail. It is the vector mark now, not a one-colour glyph: the orange spark
+   still reads at this size, and the tile it sits on is kept visible by the same
+   hairline the sidebar's mark wears (on light it lands on the same black and
+   does nothing). */
 .mark {
   display: block;
   flex: none;

@@ -117,6 +117,40 @@
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
+/*
+ * 放宽权限的常驻提示。`warn` 是黄色系（还能忍受），`danger` 是红色系
+ * （所有工具都不再问你）。和上面那条「文件被外部改动」共用排版，只是换了颜色 ——
+ * 它是同一类东西：一条一直在那里、直到你改回去的状态条。
+ */
+.modeBanner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 24px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  flex: 0 0 auto;
+}
+
+.modeBannerWarn {
+  background: rgba(209, 154, 42, 0.1);
+  border: 0.5px solid rgba(209, 154, 42, 0.4);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.modeBannerDanger {
+  background: rgba(192, 57, 43, 0.1);
+  border: 0.5px solid rgba(192, 57, 43, 0.45);
+  color: #c0392b;
+}
+
+.modeBannerText {
+  flex: 1;
+  min-width: 0;
+}
+
 .errorBanner {
   margin: 10px 24px 0;
   padding: 8px 12px;

@@ -112,13 +112,67 @@ button.header:focus-visible {
 }
 
 button.header:hover .statCounts,
-button.header:focus-visible .statCounts {
+button.header:focus-visible .statCounts,
+.headerMain:hover .statCounts,
+.headerMain:focus-visible .statCounts {
   display: none;
 }
 
 button.header:hover .previewHint,
-button.header:focus-visible .previewHint {
+button.header:focus-visible .previewHint,
+.headerMain:hover .previewHint,
+.headerMain:focus-visible .previewHint {
   display: inline;
+}
+
+.headerMain {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.headerMain:hover .title,
+.headerMain:focus-visible .title {
+  color: var(--dsw-alias-brand-primary);
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.headerActionBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.headerActionBtn:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+  border-color: var(--dsw-alias-border-l2);
 }
 
 .added {
@@ -136,6 +190,10 @@ button.header:focus-visible .previewHint {
   list-style: none;
 }
 
+.rowItem {
+  list-style: none;
+}
+
 .row {
   display: flex;
   align-items: center;
@@ -144,9 +202,9 @@ button.header:focus-visible .previewHint {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  min-height: 24px;
+  min-height: 28px;
   margin: 0;
-  padding: 7px 18px 7px 14px;
+  padding: 4px 14px;
   border: 0;
   background: transparent;
   color: var(--dsw-alias-label-tertiary);
@@ -154,6 +212,77 @@ button.header:focus-visible .previewHint {
   font-size: 11px;
   line-height: 18px;
   text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.row:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.rowMain {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rowMain:hover .path,
+.rowMain:focus-visible .path {
+  color: var(--dsw-alias-brand-primary);
+  text-decoration: underline;
+}
+
+.rowActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.rowBadge {
+  margin: 0;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.rowBadge:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.previewBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.previewBtn:hover {
+  opacity: 1;
+  color: var(--dsw-alias-label-primary);
 }
 
 button.row {

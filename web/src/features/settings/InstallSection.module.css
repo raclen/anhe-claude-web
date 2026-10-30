@@ -1,0 +1,34 @@
+/*
+ * 安装按钮。和设置页其它控件一样是 36px 高的胶囊，但用主按钮填充：
+ * 这一行是整页唯一一个「点了会发生安装」的动作，用和普通选择器一样的中性底
+ * 会让它看起来只是另一个偏好开关。
+ */
+.installButton {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary-inverted);
+  background: var(--dsw-alias-button-primary-fill);
+  border: none;
+  border-radius: 18px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.installButton:hover {
+  /* 主按钮没有单独的 hover token，叠一层同色的浅罩比硬编码第二个颜色安全：
+     浅色主题下变深、深色主题下变亮，方向由底色自己决定。 */
+  background: color-mix(in srgb, var(--dsw-alias-button-primary-fill) 88%, var(--dsw-alias-label-primary));
+}
+
+.installButton:focus-visible {
+  outline: 2px solid var(--dsw-alias-border-l4);
+  outline-offset: 2px;
+}

@@ -48,6 +48,97 @@
 
 .title {
   font-weight: 400;
+  flex: none;
+}
+
+/*
+ * 标题是两段，不是一个字符串：MCP 工具的名字里同时有 server 和工具，两者要在
+ * 视觉上分开 —— server 是「这个调用来自哪里」，工具是「它做了什么」。
+ */
+.titleInner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/*
+ * 工具名做成小气泡：浅蓝底、深蓝字、全圆角。
+ *
+ * 一行里只有它带底色，所以扫一眼就能从摘要里认出「用了什么工具」—— 之前它只是
+ * 加粗一档的灰字，和摘要同处一个视觉层级，十几行排下来几乎分不出边界。
+ *
+ * 行本身 24px 高，气泡的行高单独收到 18px：比行矮一圈才会读成「标签」而不是
+ * 「段落」。字号沿用次级正文档位，主人的字号设置一变它也跟着变。
+ */
+.toolName {
+  flex: none;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--dsw-static-blue-75);
+  color: var(--dsw-static-blue-800);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(18px + var(--dsh-content-font-delta-secondary, 0px));
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background-color 100ms ease,
+    color 100ms ease;
+}
+
+/*
+ * 暗色下把「浅蓝底 + 深蓝字」换成半透明蓝底 + 亮蓝字：固定的浅色底在暗色面板
+ * 上会变成一块刺眼的白斑，而半透明底能跟着面板本身走。
+ */
+:global(html[data-appearance="dark"]) .toolName {
+  background: color-mix(in srgb, var(--dsw-static-blue-400) 18%, transparent);
+  color: var(--dsw-static-blue-300);
+}
+
+/*
+ * 悬停/展开时整行提亮，气泡也跟着加深一档。只让图标和摘要变色、气泡僵在原地，
+ * 看起来就像漏更新了一个部件。
+ *
+ * `data-open` 挂在 `DisclosureRow` 自己的根节点上，不在这层 `.root` 上，所以
+ * 展开态得从后代里找它 —— 写成 `.root[data-open]` 永远匹配不到。
+ */
+.row:hover .toolName,
+.root [data-open] .toolName {
+  background: var(--dsw-static-blue-100);
+  color: var(--dsw-static-blue-900);
+}
+
+:global(html[data-appearance="dark"]) .row:hover .toolName,
+:global(html[data-appearance="dark"]) .root [data-open] .toolName {
+  background: color-mix(in srgb, var(--dsw-static-blue-400) 30%, transparent);
+  color: var(--dsw-static-blue-100);
+}
+
+/*
+ * 失败的工具不该还顶着成功态的蓝：图标已经换成红点、摘要已经转红，气泡再留在
+ * 蓝色里，一行就同时说了两件事。两条选择器都要写，是因为暗色悬停那条的优先级
+ * 比这里高，不带上暗色作用域的话，鼠标一放上去红色就又被蓝色盖掉了。
+ */
+.root[data-state="error"] .toolName,
+:global(html[data-appearance="dark"]) .root[data-state="error"] .toolName {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+/*
+ * server 名是「这次调用来自哪里」，属于上下文而不是动作，所以从「有底色的徽标」
+ * 降成一枚描边标签：旁边是蓝底的工具名气泡，两个都带底色只会互相抢。
+ */
+.server {
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  /* 等宽字体在同一字号下本来就显得小一号，所以不再像摘要那样减一档。 */
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(18px + var(--dsh-content-font-delta-secondary, 0px));
+  padding: 0 5px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  color: var(--dsw-alias-label-caption);
+  flex: none;
 }
 
 .sep {
@@ -68,6 +159,11 @@
   color: var(--dsw-alias-label-tertiary);
   flex: auto;
   overflow: hidden;
+}
+
+/* 命令是代码，等宽才看得出 `-la` 和 `-1a` 的区别；路径与查询保持正文字体。 */
+.summary[data-mono] {
+  font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
 
 .summary[data-error] {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { actions, appStore, sessionEvents, streamRestored } from "../../lib/app-state.ts";
+import { actions, appStore, isDraftSession, sessionEvents, streamRestored } from "../../lib/app-state.ts";
 import { useStoreSelector } from "../../lib/store.ts";
 import { api } from "../../lib/api.ts";
 import type {
@@ -69,10 +69,17 @@ export interface ConversationView {
   /**
    * 被 Claude Code 自己拒绝的工具调用。
    *
-   * 本项目**不能**弹权限确认卡（见 PROJECT_RULES.md 5.5：CLI 不把权限提问交给外部
-   * 进程）。能做的只有如实展示拒绝原因，所以每一条都留在这里给 `PermissionDeniedCard`。
+   * 服务端会把每一条原因如实转下来，留给 `PermissionDeniedCard` 展示。
    */
   denials: PermissionDenial[];
+  /**
+   * 正等着主人点按钮的权限卡。
+   *
+   * 服务端在 CLI 需要授权时下发 `permission_request`，回答后下发
+   * `permission_resolved`；这里按 requestId 收集，`PermissionRequestCard`
+   * 逐个渲染。一张卡在列表里的顺序按到达时间，最新的在最下面。
+   */
+  permissionRequests: PermissionRequest[];
   /**
    * Whether this session's agent loop is running right now.
    *
@@ -115,6 +122,26 @@ export interface PermissionDenial {
   at: number;
 }
 
+/**
+ * 一张等着回答的权限卡。
+ *
+ * `input` 是工具入参**原样**，一个字都不许裁 —— 主人要看清楚 `Bash` 到底跑什么、
+ * `Write` 到底往哪写（SECURITY.md 硬边界 3）。
+ */
+export interface PermissionRequest {
+  requestId: string;
+  toolName: string;
+  displayName: string;
+  input: Record<string, unknown>;
+  toolUseId: string;
+  description: string | null;
+  blockedPath: string | null;
+  /** CLI 建议的持久化规则；「总是允许」优先用它建议的粒度。 */
+  suggestions: unknown;
+  /** 本地收到它的时间，用于稳定排序与 key。 */
+  at: number;
+}
+
 /** One model request that pi is waiting to retry after a failure. */
 export interface RetryState {
   attempt: number;
@@ -138,6 +165,13 @@ interface StreamSlot {
    * fallback path when pi sends no final call.
    */
   rawArgs: Record<number, string>;
+  /**
+   * `thinking_start` 时的墙上时钟，按 contentIndex 记。
+   *
+   * 用来算一段推理自己流了多久（写进 `ThinkingBlock.thinkingMs`）。协议不给逐块
+   * 计时，所以这是本浏览器看着它流出来的实测值，只对本次流式产生的块存在。
+   */
+  thinkingStartedAt: Record<number, number>;
 }
 
 const emptyView: ConversationView = {
@@ -148,6 +182,7 @@ const emptyView: ConversationView = {
   undeliveredPrompts: 0,
   toolExecutions: {},
   denials: [],
+  permissionRequests: [],
   isStreaming: false,
   loading: true,
   error: null,
@@ -228,6 +263,8 @@ function applyDelta(slot: StreamSlot, delta: AssistantStreamEvent): void {
     }
     case "thinking_start":
       blocks[index] = { type: "thinking", thinking: "" };
+      // 记下这段推理开始流的时刻，`thinking_end` 时算时长（见 `thinkingMs`）。
+      slot.thinkingStartedAt[index] = Date.now();
       break;
     case "thinking_delta": {
       const existing = blocks[index];
@@ -241,7 +278,12 @@ function applyDelta(slot: StreamSlot, delta: AssistantStreamEvent): void {
     }
     case "thinking_end": {
       const final = delta.content;
-      blocks[index] = { type: "thinking", thinking: typeof final === "string" ? final : "" };
+      const text = typeof final === "string" ? final : "";
+      const startedAt = slot.thinkingStartedAt[index];
+      blocks[index] =
+        startedAt === undefined
+          ? { type: "thinking", thinking: text }
+          : { type: "thinking", thinking: text, thinkingMs: Date.now() - startedAt };
       break;
     }
     case "toolcall_start":
@@ -294,6 +336,38 @@ function applyDelta(slot: StreamSlot, delta: AssistantStreamEvent): void {
   }
 }
 
+/**
+ * 把流式期间量到的推理时长并进服务端交付的这条消息。
+ *
+ * `message_end` 的消息是权威的，它整条替换掉流式 slot；但服务端不知道每段推理流了
+ * 多久（协议没有逐块计时），那个数字只有本浏览器量得到。所以按 contentIndex 对位
+ * 拷回去，只补 `thinkingMs` 这一个字段，其余一律用服务端的那份。
+ *
+ * 对不上（两边的块数或类型变了）就原样返回：宁可少一颗时长，也不能把时长挂到
+ * 别的块上。
+ */
+function withThinkingDurations(
+  message: AgentMessage,
+  slot: StreamSlot | null,
+): AgentMessage {
+  if (slot === null) return message;
+  const assistant = message as AssistantMessage;
+  const content = assistant.content;
+  if (!Array.isArray(content)) return message;
+
+  let patched = false;
+  const merged: ContentBlock[] = content.map((block, index) => {
+    if (!block || block.type !== "thinking") return block;
+    const measured = slot.content[index];
+    if (!measured || measured.type !== "thinking") return block;
+    const ms = (measured as ThinkingBlock).thinkingMs;
+    if (ms === undefined) return block;
+    patched = true;
+    return { ...block, thinkingMs: ms } as ThinkingBlock;
+  });
+  return patched ? { ...assistant, content: merged } : message;
+}
+
 function textFromContent(content: string | ContentBlock[]): string {
   if (typeof content === "string") return content;
   return content
@@ -331,6 +405,16 @@ export interface ConversationApi extends ConversationView {
    * an extension vetoed the fork.
    */
   fork(entryId: string): Promise<{ text: string; sessionPath: string } | null>;
+  /**
+   * 回答一张权限卡。
+   *
+   * 卡片的消失不靠这个调用，靠服务端回来的 `permission_resolved` —— 那才是
+   * 「这件事结束了」的权威信号。
+   */
+  answerPermission(
+    requestId: string,
+    classification: "user_temporary" | "user_permanent" | "user_reject",
+  ): Promise<void>;
 }
 
 /**
@@ -404,9 +488,21 @@ export function useConversation(sessionPath: string | null): ConversationApi {
   const toolsRef = useRef<Record<string, ToolExecution>>({});
   /** 被 CLI 拒绝的工具调用，按到达时间累积。切会话时清空。 */
   const denialsRef = useRef<PermissionDenial[]>([]);
+  /** 正等着回答的权限卡，按到达时间累积。切会话时清空。 */
+  const permissionRequestsRef = useRef<PermissionRequest[]>([]);
   /** 本会话累计花费（美元）。来自 CLI 的 `result` 事件，没有就保持 null。 */
   const costRef = useRef<number | null>(null);
   const streamingRef = useRef(false);
+  /**
+   * Which run `streamingRef` currently describes.
+   *
+   * Bumped every time a new run opens (`agent_start`, and this client's own
+   * `send` for a prompt). Timers that clear the streaming state after a timeout
+   * capture this value and only act while it still matches — see `abort`. A
+   * boolean alone cannot tell "the interrupt never landed" from "the next turn
+   * started while we were waiting".
+   */
+  const runTokenRef = useRef(0);
   const loadingRef = useRef(true);
   const errorRef = useRef<string | null>(null);
   const retryRef = useRef<RetryState | null>(null);
@@ -459,13 +555,14 @@ export function useConversation(sessionPath: string | null): ConversationApi {
       // from the end of the newest turn and normally stops at its last tool
       // result, and a stale plan is a worse bug than a redundant pass.
       todos: projectTodos(messagesRef.current, undeliveredPrompts),
-      partial: slot ? [...slot.content] : null,
+      partial: slot ? slot.content.filter((b): b is ContentBlock => Boolean(b)) : null,
       // Recomputed rather than counted as it changes: the refs are the state,
       // and one pass over a few hundred messages is cheaper than a counter that
       // can drift from the list it describes.
       undeliveredPrompts,
       toolExecutions: { ...toolsRef.current },
       denials: [...denialsRef.current],
+      permissionRequests: [...permissionRequestsRef.current],
       isStreaming: streamingRef.current,
       loading: loadingRef.current,
       error: errorRef.current,
@@ -515,6 +612,7 @@ export function useConversation(sessionPath: string | null): ConversationApi {
       switch (event.type) {
         case "agent_start":
           streamingRef.current = true;
+          runTokenRef.current += 1;
           // A fresh run: whatever the previous turn ended with is history now.
           retryAttemptRef.current = 0;
           failedAttemptsRef.current = 0;
@@ -552,7 +650,7 @@ export function useConversation(sessionPath: string | null): ConversationApi {
         case "message_start": {
           const message = event.message as AgentMessage | undefined;
           if (message?.role === "assistant") {
-            slotRef.current = { content: [], rawArgs: {} };
+            slotRef.current = { content: [], rawArgs: {}, thinkingStartedAt: {} };
             timingRef.current.stepStart = Date.now();
             timingRef.current.firstTokenAt = null;
           } else if (message?.role === "user") {
@@ -569,7 +667,7 @@ export function useConversation(sessionPath: string | null): ConversationApi {
         case "message_update": {
           const delta = event.assistantMessageEvent as AssistantStreamEvent | undefined;
           if (!delta) break;
-          if (!slotRef.current) slotRef.current = { content: [], rawArgs: {} };
+          if (!slotRef.current) slotRef.current = { content: [], rawArgs: {}, thinkingStartedAt: {} };
           // TTFT runs to the first *non-empty* chunk: `text_start` frames land
           // with nothing in them, and counting one would report a first token
           // the model had not produced yet.
@@ -591,7 +689,7 @@ export function useConversation(sessionPath: string | null): ConversationApi {
           if (!message) break;
           if (message.role === "assistant") {
             const hadAssistant = messagesRef.current.some((m) => m.role === "assistant");
-            messagesRef.current = [...messagesRef.current, message];
+            messagesRef.current = [...messagesRef.current, withThinkingDurations(message, slotRef.current)];
             slotRef.current = null;
 
             // Close the step here, where the assembled message (and therefore
@@ -720,8 +818,45 @@ export function useConversation(sessionPath: string | null): ConversationApi {
           break;
         }
 
+        case "permission_request": {
+          // CLI 停下来问主人了。**入参原样留着**，不裁不美 —— 硬边界 3。
+          const requestId = asString(event.requestId);
+          if (requestId.length === 0) break;
+          const input =
+            typeof event.input === "object" && event.input !== null && !Array.isArray(event.input)
+              ? (event.input as Record<string, unknown>)
+              : {};
+          const next: PermissionRequest[] = [
+            ...permissionRequestsRef.current.filter((item) => item.requestId !== requestId),
+            {
+              requestId,
+              toolName: asString(event.toolName),
+              displayName: asString(event.displayName) || asString(event.toolName),
+              input,
+              toolUseId: asString(event.toolUseId),
+              description: asString(event.description) || null,
+              blockedPath: asString(event.blockedPath) || null,
+              suggestions: event.suggestions ?? null,
+              at: Date.now(),
+            },
+          ];
+          permissionRequestsRef.current = next;
+          break;
+        }
+
+        case "permission_resolved": {
+          // 回答完了（或会话没了）：把卡收起来，不管是谁点的。
+          const requestId = asString(event.requestId);
+          permissionRequestsRef.current = permissionRequestsRef.current.filter(
+            (item) => item.requestId !== requestId,
+          );
+          break;
+        }
+
         case "agent_settled":
           streamingRef.current = false;
+          retryRef.current = null;
+          retryAttemptRef.current = 0;
           break;
 
         default:
@@ -738,7 +873,10 @@ export function useConversation(sessionPath: string | null): ConversationApi {
       errorRef.current = null;
       publish();
       try {
-        const { messages, forkPoints } = await api.getMessages(path);
+        const { messages, forkPoints, sessionPath: resolvedPath } = await api.getMessages(path);
+        if (resolvedPath && resolvedPath !== path && isDraftSession(path)) {
+          actions.renameSessionPath(path, resolvedPath);
+        }
         // System messages replay the entire prompt and tool loadout; the UI
         // never shows them and they would dwarf the real conversation.
         const visible = messages.filter((message) => message.role !== "system");
@@ -780,6 +918,7 @@ export function useConversation(sessionPath: string | null): ConversationApi {
     failedAttemptsRef.current = 0;
     persistedNotifiedRef.current = false;
     denialsRef.current = [];
+    permissionRequestsRef.current = [];
     costRef.current = null;
     // The history below belongs to the previous session until `load` says
     // otherwise; leaving this set would let a queued prompt skip the wait.
@@ -792,6 +931,31 @@ export function useConversation(sessionPath: string | null): ConversationApi {
     }
 
     void load(sessionPath);
+    // 刷新页面 / 切回会话时，服务端可能还挂着上一轮没答的权限请求。那条 CLI
+    // 的 `tools/call` 正在等，不把这些卡片捞回来，主人就只能等到中继超时。
+    void api
+      .getPendingPermissions(sessionPath)
+      .then(({ pending }) => {
+        if (pending.length === 0) return;
+        const known = new Set(permissionRequestsRef.current.map((item) => item.requestId));
+        const restored = pending
+          .filter((entry) => !known.has(entry.requestId))
+          .map((entry) => ({
+            requestId: entry.requestId,
+            toolName: entry.toolName,
+            displayName: entry.displayName,
+            input: entry.input,
+            toolUseId: entry.toolUseId,
+            description: entry.description,
+            blockedPath: entry.blockedPath,
+            suggestions: entry.suggestions,
+            at: entry.requestedAt,
+          }));
+        if (restored.length === 0) return;
+        permissionRequestsRef.current = [...permissionRequestsRef.current, ...restored];
+        publish();
+      })
+      .catch(() => undefined);
     const unsubscribe = sessionEvents.subscribe((payload) => {
       if (payload.sessionPath !== sessionPath) return;
       handleEvent(payload.event);
@@ -826,7 +990,10 @@ export function useConversation(sessionPath: string | null): ConversationApi {
         ...messagesRef.current,
         { role: "user", content: userContent(message, images), timestamp: Date.now() },
       ];
-      if (mode === "prompt") streamingRef.current = true;
+      if (mode === "prompt") {
+        streamingRef.current = true;
+        runTokenRef.current += 1;
+      }
       // A prompt is sent as a prompt, so pi has taken it up the moment the call
       // returns; counting it here keeps the turn before it from looking live for
       // the round-trip a `message_start` would take to arrive (its changed-files
@@ -856,13 +1023,64 @@ export function useConversation(sessionPath: string | null): ConversationApi {
 
   const abort = useCallback(async () => {
     if (!sessionPath) return;
+    retryRef.current = null;
+    retryAttemptRef.current = 0;
+    publish();
+
+    /**
+     * The run this abort is meant to end.
+     *
+     * The safety timer must not fire on a *different* run. `agent_start` sets
+     * `streamingRef` back to true, so "still streaming in 3 seconds" cannot tell
+     * "the interrupt was ignored" from "the user already sent the next
+     * message". Clearing the mark in the second case would take the Stop button
+     * away from a turn that is genuinely running.
+     */
+    const turnAtAbort = runTokenRef.current;
+    const safetyTimer = setTimeout(() => {
+      if (streamingRef.current && runTokenRef.current === turnAtAbort) {
+        streamingRef.current = false;
+        actions.clearSessionActivity(sessionPath);
+        publish();
+      }
+    }, 3000);
+
     try {
       await api.abort(sessionPath);
     } catch (err) {
+      clearTimeout(safetyTimer);
       errorRef.current = (err as Error).message;
+      // Same rule: a failed request belongs to the turn it was sent for.
+      if (runTokenRef.current === turnAtAbort) {
+        streamingRef.current = false;
+        actions.clearSessionActivity(sessionPath);
+      }
       publish();
     }
   }, [sessionPath, publish]);
+
+  /**
+   * 回答一张权限卡。
+   *
+   * 三个按钮的语义由服务端 `controls.ts` 定：允许一次 / 总是允许 / 拒绝。
+   * **卡片的消失不靠这里**：服务端回答后会下发 `permission_resolved`，那才是
+   * 权威的「这件事结束了」。这里只负责把决定送出去，失败了把错误说出来。
+   */
+  const answerPermission = useCallback(
+    async (
+      requestId: string,
+      classification: "user_temporary" | "user_permanent" | "user_reject",
+    ): Promise<void> => {
+      if (!sessionPath) return;
+      try {
+        await api.answerPermission(sessionPath, requestId, classification);
+      } catch (err) {
+        errorRef.current = (err as Error).message;
+        publish();
+      }
+    },
+    [sessionPath, publish],
+  );
 
   const reload = useCallback(async () => {
     if (!sessionPath) return;
@@ -901,7 +1119,15 @@ export function useConversation(sessionPath: string | null): ConversationApi {
   // app-wide one. Either being true means the turn is still moving, so the two
   // are unioned: the ref knows about a run whose start frame this subscription
   // missed, and the mark knows about one that started before this hook mounted.
-  return { ...view, isStreaming: view.isStreaming || running, send, abort, reload, fork };
+  return {
+    ...view,
+    isStreaming: view.isStreaming || running,
+    send,
+    abort,
+    reload,
+    fork,
+    answerPermission,
+  };
 }
 
 export { textFromContent };

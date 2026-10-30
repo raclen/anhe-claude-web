@@ -5,16 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>anhe-claude-web</title>
     <!--
-      The brand mark: `public/pi-mark.png`, the same bitmap the sidebar tile,
-      the new-session hero, and the desktop app icon use. A PNG link rather than
-      the inline SVG that used to sit here — the artwork is a bitmap (a hand-
-      drawn π on black), so there is nothing to vectorize, and one file keeps the
-      browser tab aligned with everything else in the shell. Without any icon
-      link the browser still asks for /favicon.ico and logs a 404 on every load.
-      The tile is dark on purpose: a favicon cannot react to the page, and a dark
-      tile reads correctly on both light and dark browser chrome.
+      图标：`public/mark.svg` 是绘制的源头（`scripts/brand-assets.py` 里的
+      几何），侧栏、新会话页、运行状态行与标签页共用同一份矢量文件。PNG 那份
+      只给「必须固定像素」的地方用：manifest 的 192/512、iOS 加到主屏的 180。
+      砖是深色、火花是陶土橙：favicon 无法跟随页面主题，深砖在浅色与深色两种
+      浏览器 chrome 上都读得出来。缺少 icon 链接时浏览器会去要 /favicon.ico，
+      所以那里也放了一份（由同一个脚本生成），不是靠它 404。
     -->
     <link rel="icon" type="image/svg+xml" href="/mark.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+    <!--
+      「安装到桌面」需要两件事：一份 manifest（名称、图标、以窗口而非标签页
+      打开），以及一个带 fetch 处理器的 service worker —— Chromium 系把后者
+      当作安装资格的一部分，`public/sw.js` 就是为此存在的最小实现。
+    -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#1f1e1d" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="application-name" content="anhe-claude-web" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Claude Web" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <script>
       //
       // Resolve the appearance preference before the first paint. The value is

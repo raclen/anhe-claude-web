@@ -61,11 +61,61 @@ export function normalizeToolName(toolName: string): string {
   return toolName.toLowerCase();
 }
 
+/** `mcp__<server>__<tool>` 拆开后的两半。 */
+export interface McpToolName {
+  /** MCP server 名，例如 `chrome-devtools` / `firecrawl`。 */
+  server: string;
+  /** server 提供的工具名，例如 `click` / `firecrawl_scrape`。 */
+  tool: string;
+}
+
+/**
+ * 拆 `mcp__<server>__<tool>`；不是 MCP 工具就返回 undefined。
+ *
+ * server 名本身可以含单个下划线（`chrome_devtools`），所以中间那段用的是
+ * 「下划线分隔的多段」而不是 `[^_]+`。
+ */
+export function parseMcpToolName(toolName: string): McpToolName | undefined {
+  const mcp = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(toolName);
+  if (mcp === null) return undefined;
+  return { server: mcp[1]!, tool: mcp[2]! };
+}
+
 /** 展示用的工具名：MCP 工具剥掉冗长的前缀，其余原样。 */
 export function displayToolName(toolName: string): string {
-  const mcp = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(toolName);
-  if (mcp !== null) return mcp[2]!;
-  return toolName;
+  return parseMcpToolName(toolName)?.tool ?? toolName;
+}
+
+/**
+ * pi 风格的小写工具名 → 界面上的正式写法。
+ *
+ * Claude Code 报的本来就是 `Bash` / `Read` 这种正式写法，只有历史数据里还留着
+ * 小写名，统一一下免得同一份转录里两种写法并存。
+ */
+const PRETTY_TOOL_NAMES: Record<string, string> = {
+  bash: "Bash",
+  powershell: "PowerShell",
+  read: "Read",
+  write: "Write",
+  edit: "Edit",
+  grep: "Grep",
+  glob: "Glob",
+  find: "Find",
+  ls: "LS",
+};
+
+/**
+ * 工具行标题的两段：斜杠后面跟的其实是 MCP server 名。
+ *
+ * 工具行显示**真实工具名**（`Bash` / `Edit` / `Read`），而不是按 variant 翻成的
+ * 「命令 / 编辑 / 读取」—— 转录里同一段话经常混着几个不同工具，中文 variant 词
+ * 会让它们看起来像同一件事。MCP 工具把 `mcp__` 前缀剥掉之后还剩
+ * `chrome-devtools` + `click` 两段信息，两者都要露出来。
+ */
+export function toolRowTitle(toolName: string): { label: string; server?: string } {
+  const mcp = parseMcpToolName(toolName);
+  if (mcp !== undefined) return { label: mcp.tool, server: mcp.server };
+  return { label: PRETTY_TOOL_NAMES[toolName] ?? toolName };
 }
 
 /**

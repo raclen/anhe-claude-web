@@ -414,6 +414,7 @@ function FileSection({
               busy={busy}
               onStage={(path, staged) => onStage([path], staged)}
               onDiscard={onDiscard}
+              onOpenFile={onOpenFile}
             />
             {file.status === "untracked" ? (
               <button

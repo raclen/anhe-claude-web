@@ -12,6 +12,7 @@ import {
   type SessionOrderBy,
   type SidebarView,
 } from "./sidebar-view.ts";
+import type { PermissionMode } from "../features/conversation/PermissionModeSwitch.tsx";
 import { createEmitter, createStore, useStoreSelector, type Emitter, type Store } from "./store.ts";
 import { applyAppearance, applyContentFontSize, watchSystemAppearance } from "./theme.ts";
 import type {
@@ -65,7 +66,7 @@ export const DRAFT_PREFIX = "draft:";
  * more" — dsh's five. This is the page the sidebar asks the server for, so the
  * two have to agree (see `refreshSessions`).
  */
-export const SESSIONS_PAGE_SIZE = 5;
+export const SESSIONS_PAGE_SIZE = 20;
 
 export function isDraftSession(sessionPath: string | null): boolean {
   return typeof sessionPath === "string" && sessionPath.startsWith(DRAFT_PREFIX);
@@ -157,11 +158,41 @@ export interface AppState {
   /** Text submitted before its session finished spawning. */
   pendingPrompt: PendingPrompt | null;
   /**
+   * 新建会话页发出的那条消息，在会话真正落盘之前先放在这里。
+   *
+   * 为什么需要：新会话的第一条消息由 `startDraftSession` 直接 POST，而那个时刻
+   * 前端还没有能订阅的会话路径（`draft:` 键的对话实例在 `ConversationPane` 里
+   * 是不挂载的），所以那条消息**没有任何地方可以渲染**。用户看到的就是自己打的字
+   * 凭空消失，直到下一轮回复把整条转录读回来才出现 —— 这正是「没回复完成前看不到
+   * 我发出去的这几个字」。
+   *
+   * 记在这里，`MessageList` 在会话落盘前把它当一条乐观用户消息画出来。会话拿到真
+   * 实路径后由 `renameSessionPath` 清掉，此后转录以磁盘上的那份为准，不会重复。
+   */
+  draftFirstMessage: {
+    sessionPath: string;
+    text: string;
+    images: ImageBlock[];
+    /** 发出的时刻。渲染成消息时要一个稳定值，不能在每次渲染时现算。 */
+    at: number;
+  } | null;
+  /**
    * The model the next new session starts on, chosen on the hero before that
    * session exists. Null means "whatever pi starts on", which is also the state
    * a fresh app is in — so this is deliberately not persisted anywhere.
    */
   newSessionModel: ComposerModel | null;
+  /** The thinking level chosen for the next new session. */
+  newSessionThinkingLevel: string | null;
+  /**
+   * 下一个新会话的权限模式，在新会话页上选。
+   *
+   * 与 `newSessionThinkingLevel` 同理：只在这一次创建里有效，创建后回到默认。
+   * **不设成 null**：CLI 的默认就是 `default`，这里的 `null` 会让选择器显示成
+   * 「未知模式」，看起来像选了一个不存在的模式。显式写 `default` 语义等价，
+   * 但界面上永远有一个真实模式名。
+   */
+  newSessionPermissionMode: PermissionMode;
   /** Projects whose session list is expanded in the sidebar. */
   expandedProjects: Record<string, true>;
   /** Extra session rows revealed per project beyond the default page. */
@@ -226,7 +257,10 @@ const initialState: AppState = {
   externalChanged: {},
   pendingUiRequests: [],
   pendingPrompt: null,
+  draftFirstMessage: null,
   newSessionModel: null,
+  newSessionThinkingLevel: null,
+  newSessionPermissionMode: "default",
   expandedProjects: {},
   revealedSessions: {},
   sessionQuery: "",
@@ -632,6 +666,8 @@ export const actions = {
       // Same reasoning for the model: the available list is per project, so a
       // choice made in one could name a model the next one cannot reach.
       newSessionModel: null,
+      newSessionThinkingLevel: null,
+      newSessionPermissionMode: "default",
     }));
     await actions.refreshSessions(projectId);
     // Warm a session while the user is deciding what to do, so the next "+"
@@ -793,23 +829,59 @@ export const actions = {
    */
   renameSessionPath(previousPath: string, sessionPath: string): void {
     if (previousPath === sessionPath) return;
-    appStore.update((state) => ({
-      ...state,
-      selectedSessionPath:
-        state.selectedSessionPath === previousPath ? sessionPath : state.selectedSessionPath,
-      // 「未保存的新会话」列表里那一行也要跟着走，否则侧栏会留一条点不开的行。
-      unsavedSessions: replacePath(
-        state.unsavedSessions,
-        state.selectedProjectId ?? "",
-        previousPath,
-        sessionPath,
-      ),
-      // 排队中的首条消息是挂在旧路径上的，得一起搬，否则新会话收不到它。
-      pendingPrompt:
-        state.pendingPrompt?.sessionPath === previousPath
-          ? { ...state.pendingPrompt, sessionPath }
-          : state.pendingPrompt,
-    }));
+    appStore.update((state) => {
+      // **运行标记必须跟着搬家。** 首轮的 `agent_start` 是在 `system:init`
+      // 之前发的（服务端那时还用 `draft:<项目>` 当键），等 `session_renamed`
+      // 到达时标记还挂在旧键上。不搬的话，会话已经切到真实路径、订阅也换了键，
+      // 但 `sessionActivity` 查不到 "ongoing" —— 于是整轮都没有「停止生成」按钮，
+      // 要等下一轮才会出现。这正是「发出去消息没有停止按键」的根因。
+      const sessionActivity = { ...state.sessionActivity };
+      const mark = sessionActivity[previousPath];
+      let nextActivity = sessionActivity;
+      if (mark !== undefined) {
+        delete sessionActivity[previousPath];
+        sessionActivity[sessionPath] = mark;
+        nextActivity = sessionActivity;
+      }
+
+      return {
+        ...state,
+        selectedSessionPath:
+          state.selectedSessionPath === previousPath ? sessionPath : state.selectedSessionPath,
+        // 「未保存的新会话」列表里那一行也要跟着走，否则侧栏会留一条点不开的行。
+        unsavedSessions: replacePath(
+          state.unsavedSessions,
+          state.selectedProjectId ?? "",
+          previousPath,
+          sessionPath,
+        ),
+        // 排队中的首条消息是挂在旧路径上的，得一起搬，否则新会话收不到它。
+        pendingPrompt:
+          state.pendingPrompt?.sessionPath === previousPath
+            ? { ...state.pendingPrompt, sessionPath }
+            : state.pendingPrompt,
+        // 草稿期的乐观首条消息搬完就该退场：会话已经落盘，转录由磁盘那份说了算，
+        // 留着会让同一条消息画两遍。
+        draftFirstMessage:
+          state.draftFirstMessage?.sessionPath === previousPath
+            ? null
+            : state.draftFirstMessage,
+        // 「外部改动」与「待回答的对话框」同理：都是按路径索引的。
+        externalChanged:
+          state.externalChanged[previousPath] === true
+            ? (() => {
+                const next = { ...state.externalChanged };
+                delete next[previousPath];
+                next[sessionPath] = true;
+                return next;
+              })()
+            : state.externalChanged,
+        pendingUiRequests: state.pendingUiRequests.map((item) =>
+          item.sessionPath === previousPath ? { ...item, sessionPath } : item,
+        ),
+        sessionActivity: nextActivity,
+      };
+    });
   },
 
   selectSession(sessionPath: string | null): void {
@@ -829,6 +901,8 @@ export const actions = {
         // Leaving the new-session flow also drops the model chosen for it: the
         // session it was meant for is not the one being opened.
         newSessionModel: null,
+        newSessionThinkingLevel: null,
+        newSessionPermissionMode: "default",
         sessionActivity,
       };
     });
@@ -888,6 +962,9 @@ export const actions = {
     initialPrompt?: string,
     images: ImageBlock[] = [],
     model: { provider: string; id: string } | null = null,
+    thinkingLevel: string | null = null,
+    // 与 `newSessionPermissionMode` 一致：默认就是 CLI 的 `default`，不用 null 兜。
+    permissionMode: PermissionMode = "default",
   ): void {
     const localId = `${DRAFT_PREFIX}${Math.random().toString(36).slice(2, 10)}`;
     appStore.update((state) => ({
@@ -905,24 +982,22 @@ export const actions = {
       // Consumed here: the choice belongs to the session being created, not to
       // whatever the user does after it exists.
       newSessionModel: null,
+      newSessionThinkingLevel: null,
+      newSessionPermissionMode: "default",
       expandedProjects: { ...state.expandedProjects, [projectId]: true },
     }));
 
     draftRequest = api
-      .createSession(projectId, model)
+      .createSession(projectId, model, thinkingLevel, permissionMode)
       .then((created) => {
         // The session exists either way; a stale model id only costs the
         // choice, so it is reported without abandoning the draft.
         if (created.modelError !== undefined) actions.setNotice(created.modelError);
-        // Queue before swapping the path in: the conversation instance that
-        // mounts for the real session consumes it after its history load.
         // A first message can be a screenshot with nothing typed under it, so
         // the condition is "anything to send" rather than "text" — the same
         // rule the composer's own submit uses.
         const prompt = initialPrompt?.trim() ?? "";
-        if (prompt.length > 0 || images.length > 0) {
-          actions.queuePendingPrompt(created.sessionPath, prompt, "prompt", images);
-        }
+        const hasFirstMessage = prompt.length > 0 || images.length > 0;
         // The draft id is replaced by the real path in place, wherever the user
         // has navigated to by now — the row follows the session, not the view.
         appStore.update((state) => ({
@@ -931,6 +1006,53 @@ export const actions = {
             state.selectedSessionPath === localId ? created.sessionPath : state.selectedSessionPath,
           unsavedSessions: replacePath(state.unsavedSessions, projectId, localId, created.sessionPath),
         }));
+        // **Send the first message here, not from the conversation instance.**
+        // While the session is still a draft, `ConversationPane` hands
+        // `useConversation` a null path (there is no transcript to subscribe to
+        // yet), so its queued-prompt effect never runs and the message would
+        // never be delivered. Sending it is also what makes the server emit
+        // `system:init`: without a first message the session never gets an id,
+        // never lands on a jsonl path, and `session_renamed` never fires — the
+        // header would sit on "正在准备会话…" forever.
+        //
+        // No `queuePendingPrompt` alongside it: that queue is consumed by
+        // `useConversation.send`, which would POST the same message a second
+        // time. The optimistic user turn comes from the transcript the server
+        // replays once the session lands on its real path.
+        if (hasFirstMessage) {
+          // 先记下来，让转录在会话落盘之前就能画出这条消息。由 `MessageList`
+          // 在 `sessionPath` 还以 `draft:` 开头时渲染 —— 那段时间里没有磁盘转录
+          // 可读，不放这一条，用户打出去的字就是凭空消失。
+          appStore.update((state) => ({
+            ...state,
+            draftFirstMessage: {
+              sessionPath: created.sessionPath,
+              text: prompt,
+              images,
+              at: Date.now(),
+            },
+          }));
+          void api
+            .prompt(created.sessionPath, prompt, images)
+            .then((res) => {
+              if (
+                res?.sessionPath &&
+                res.sessionPath !== created.sessionPath &&
+                !isDraftSession(res.sessionPath)
+              ) {
+                actions.renameSessionPath(created.sessionPath, res.sessionPath);
+              }
+            })
+            .catch((err: unknown) => {
+              actions.setNotice((err as Error).message);
+              // 没送出去就不能继续画成一条已发送的消息，否则用户会以为它在路上。
+              appStore.update((state) =>
+                state.draftFirstMessage?.sessionPath === created.sessionPath
+                  ? { ...state, draftFirstMessage: null }
+                  : state,
+              );
+            });
+        }
         return created.sessionPath;
       })
       .catch((err: unknown) => {
@@ -1107,6 +1229,8 @@ export const actions = {
       // Back to pi's own default: the hero is the place the choice is made, so
       // opening it shows what pi would pick rather than the last pick.
       newSessionModel: null,
+      newSessionThinkingLevel: null,
+      newSessionPermissionMode: "default",
     }));
   },
 
@@ -1116,6 +1240,15 @@ export const actions = {
    */
   setNewSessionModel(model: ComposerModel | null): void {
     appStore.update((state) => ({ ...state, newSessionModel: model }));
+  },
+
+  setNewSessionThinkingLevel(level: string | null): void {
+    appStore.update((state) => ({ ...state, newSessionThinkingLevel: level }));
+  },
+
+  /** 记住新会话页上选的权限模式；由下一次 `startDraftSession` 消费。 */
+  setNewSessionPermissionMode(mode: PermissionMode): void {
+    appStore.update((state) => ({ ...state, newSessionPermissionMode: mode }));
   },
 
   toggleProjectExpanded(projectId: string): void {
@@ -1295,16 +1428,44 @@ export const actions = {
    * coming to clear it. Distinct from `setActiveSessions`, which the
    * `session_closed` handler calls with a list it has only *removed* from and
    * which therefore cannot be treated as complete.
+   *
+   * `runningSessions` is the other half of the same handshake: which of those
+   * handles has a turn **in flight right now**. The run mark lives only in this
+   * page's memory, so a reload, a second tab, or opening a session another tab
+   * started all begin with an empty mark — while the server-side turn is still
+   * going, e.g. sitting out a 408 retry backoff. Without this the composer has
+   * no Stop button and the transcript shows nothing happening, so the only way
+   * to end that turn is to wait for the CLI to give up. The frame is the one
+   * place the server can tell us, and the marks that survive a reconnect are
+   * kept rather than replaced.
    */
-  reconcileActiveSessions(activeSessions: string[]): void {
+  reconcileActiveSessions(
+    activeSessions: string[],
+    runningSessions: readonly string[] = [],
+  ): void {
     appStore.update((state) => {
       const live = new Set(activeSessions);
-      const stale = Object.entries(state.sessionActivity).filter(
-        ([path, mark]) => mark === "ongoing" && !live.has(path),
-      );
-      if (stale.length === 0) return { ...state, activeSessions };
       const sessionActivity = { ...state.sessionActivity };
-      for (const [path] of stale) delete sessionActivity[path];
+      let changed = false;
+
+      for (const [path, mark] of Object.entries(state.sessionActivity)) {
+        if (mark === "ongoing" && !live.has(path)) {
+          delete sessionActivity[path];
+          changed = true;
+        }
+      }
+
+      // A run that is still going wins over whatever this page remembered:
+      // "ongoing" is the truth, and a stale "done" dot belongs to the turn that
+      // finished before this one started.
+      for (const path of runningSessions) {
+        if (sessionActivity[path] !== "ongoing") {
+          sessionActivity[path] = "ongoing";
+          changed = true;
+        }
+      }
+
+      if (!changed) return { ...state, activeSessions };
       return { ...state, activeSessions, sessionActivity };
     });
   },

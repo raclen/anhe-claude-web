@@ -12,12 +12,7 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 export interface ContextMeterProps {
   context: ComposerContext | null;
-  /**
-   * Called when the panel opens without a figure to show. The context estimate
-   * is only authoritative inside a running pi, so this is where a session that
-   * was read from disk pays one cold start — at the user's request, rather than
-   * on every sidebar click.
-   */
+  /** 打开面板时刷新 CLI 上下文；仅用户主动查询时才允许启动未驻留的会话。 */
   onRequestLive(): void;
 }
 
@@ -28,10 +23,8 @@ export interface ContextMeterProps {
  * where horizontal space is contested: the figure itself is one click away in the
  * panel, and the shape answers "am I near the limit?" without being read.
  *
- * A ring with no arc is the honest rendering of "unknown" — pi reports a null
- * token count right after a compaction, and a session read from disk may have no
- * `contextWindow` to measure against. Nothing is drawn at all only when there is
- * no model to describe.
+ * 没有已知窗口时不画占用弧线，但面板仍展示已知的历史 token 数。
+ * 实时查询与历史 usage 分开标注，避免把缺失窗口误报成整个会话没有用量。
  */
 export function ContextMeter({ context, onRequestLive }: ContextMeterProps) {
   const t = useT();
@@ -63,6 +56,8 @@ export function ContextMeter({ context, onRequestLive }: ContextMeterProps) {
         <button
           type="button"
           className={styles.button}
+          aria-haspopup="dialog"
+          aria-expanded={open}
           aria-label={t("context.unknown")}
           title={t("context.unknown")}
           onClick={() => {
@@ -83,11 +78,13 @@ export function ContextMeter({ context, onRequestLive }: ContextMeterProps) {
   }
 
   const percent = context.percent;
-  const label =
-    percent === null || context.tokens === null
-      ? t("context.unknown")
+  const windowKnown = context.contextWindow > 0;
+  const label = context.tokens === null
+    ? t("context.unknown")
+    : context.source === "usage"
+      ? t("context.usageOnly", { used: formatTokens(context.tokens) })
       : t("context.breakdown", {
-          percent: formatPercent(percent),
+          percent: percent === null ? t("context.unknownValue") : formatPercent(percent),
           used: formatTokens(context.tokens),
           window: formatTokens(context.contextWindow),
         });
@@ -104,7 +101,7 @@ export function ContextMeter({ context, onRequestLive }: ContextMeterProps) {
         onClick={() => {
           const next = !open;
           setOpen(next);
-          if (next && context.tokens === null) onRequestLive();
+          if (next) onRequestLive();
         }}
       >
         <Ring percent={percent} />
@@ -117,11 +114,13 @@ export function ContextMeter({ context, onRequestLive }: ContextMeterProps) {
           value={
             context.tokens === null
               ? undefined
-              : `${formatTokens(context.tokens)} / ${formatTokens(context.contextWindow)}`
+              : windowKnown
+                ? `${formatTokens(context.tokens)} / ${formatTokens(context.contextWindow)}`
+                : `${formatTokens(context.tokens)} tok`
           }
-          note={t("context.note")}
+          note={t(context.source === "live" ? "context.note" : "context.usageNote")}
         >
-          <StatRow label={t("context.window")} value={`${formatTokens(context.contextWindow)} tok`} />
+          <StatRow label={t("context.window")} value={windowKnown ? `${formatTokens(context.contextWindow)} tok` : t("context.unknownValue")} />
           <StatRow
             label={t("context.used")}
             value={
@@ -135,7 +134,7 @@ export function ContextMeter({ context, onRequestLive }: ContextMeterProps) {
           <StatRow
             label={t("context.remaining")}
             value={
-              context.tokens === null
+              context.tokens === null || !windowKnown
                 ? t("context.unknownValue")
                 : `${formatTokens(Math.max(0, context.contextWindow - context.tokens))} tok`
             }

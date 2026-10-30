@@ -4,7 +4,7 @@ import type { GitFileEntry } from "../../lib/types.ts";
 import { parseUnifiedDiff } from "./diff-parse.ts";
 import { DiffHunkView } from "./DiffHunk.tsx";
 import { PlusIcon } from "../../components/icons.tsx";
-import { MinusIcon, TreeChevronIcon, UndoIcon } from "./rightbar-icons.tsx";
+import { ExternalIcon, MinusIcon, TreeChevronIcon, UndoIcon } from "./rightbar-icons.tsx";
 import { PathLabel } from "./rightbar-path.tsx";
 import styles from "./ChangesTab.module.css";
 import { useT } from "../../lib/app-state.ts";
@@ -56,6 +56,7 @@ export function ChangesFile({
   busy,
   onStage,
   onDiscard,
+  onOpenFile,
 }: {
   file: GitFileEntry;
   /** Which list the row is in: it decides what the buttons mean. */
@@ -63,6 +64,7 @@ export function ChangesFile({
   busy: boolean;
   onStage(path: string, staged: boolean): void;
   onDiscard(path: string): void;
+  onOpenFile?: ((path: string) => void) | undefined;
 }) {
   const t = useT();
   const parsed = useMemo(() => parseUnifiedDiff(file.patch), [file.patch]);
@@ -99,6 +101,19 @@ export function ChangesFile({
             </>
           ) : null}
         </button>
+
+        {file.status !== "deleted" && onOpenFile !== undefined ? (
+          <button
+            type="button"
+            className={styles.rowAction}
+            disabled={busy}
+            title={t("changes.viewFile")}
+            aria-label={t("turnChanges.openFileAria", { name: file.path })}
+            onClick={() => onOpenFile(file.path)}
+          >
+            <ExternalIcon width={13} height={13} />
+          </button>
+        ) : null}
 
         {side === "unstaged" ? (
           <button

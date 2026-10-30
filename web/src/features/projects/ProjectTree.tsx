@@ -422,7 +422,7 @@ export function ProjectTreeItem({
               type="button"
               className={styles.revealMore}
               style={{ paddingLeft: 28 + indent }}
-              onClick={() => actions.revealMoreSessions(project.id, rows.limit + SESSIONS_PAGE_SIZE)}
+              onClick={() => actions.revealMoreSessions(project.id, rows.limit + remaining)}
             >
               {t("session.expandAll", { count: remaining })}
             </button>

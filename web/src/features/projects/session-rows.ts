@@ -38,7 +38,11 @@ export function sessionRowsOf(state: AppState, projectId: string): SessionRows {
   const query = state.sessionQuery.trim().toLowerCase();
   const searching = query.length > 0;
   const matched = searching
-    ? visible.filter((session) => session.title.toLowerCase().includes(query))
+    ? visible.filter(
+        (session) =>
+          session.title.toLowerCase().includes(query) ||
+          Boolean(session.gitBranch?.toLowerCase().includes(query)),
+      )
     : visible;
   const view = state.sidebarView;
   const ordered = view.orderBy === "manual"
@@ -86,7 +90,11 @@ export function flatSessionRowsOf(state: AppState): FlatRows {
   }
   const query = state.sessionQuery.trim().toLowerCase();
   const matched = query.length > 0
-    ? rows.filter((session) => session.title.toLowerCase().includes(query))
+    ? rows.filter(
+        (session) =>
+          session.title.toLowerCase().includes(query) ||
+          Boolean(session.gitBranch?.toLowerCase().includes(query)),
+      )
     : rows;
   const view = state.sidebarView;
   const sessions = view.orderBy === "manual"

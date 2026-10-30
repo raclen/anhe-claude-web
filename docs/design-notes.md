@@ -62,31 +62,47 @@ claude -p
 ## 四、前端最大的新增：权限与拒绝
 
 pi-web 没有这个界面——因为 pi 的权限模型不同。Claude Code 每次要跑工具都会**阻塞**，
-等宿主回一个决定。于是本项目做了权限 UI，但**只做了一半，且这一半是被协议限制的**。
+等宿主回一个决定。本项目把这条路接上了，靠的是一个内置的 MCP 中继。
 
-### 4.1 为什么没有「允许 / 拒绝」按钮
+### 4.1 「允许 / 拒绝」按钮是怎么接通的
 
-这是本项目最需要说清楚的一件事。
+设计之初只试了两条死路：`--permission-prompts host` 拿不到提问（只会收到
+`system:permission_denied`），`--sdk-url` 被
+`host "127.0.0.1" is not an approved Anthropic endpoint` 直接拒。
+**第三条路是 `--permission-prompt-tool`**：给出 `mcp__<服务器>__<工具>` 形式的工具名，
+CLI 需要授权时会**调用那个 MCP 工具**，把返回的 JSON 文本当裁决。
 
-设计之初的目标是 pi 那种弹卡：工具要跑之前停下来，宿主回一个 `allow` / `deny`。
-我们把 `can_use_tool` 的 schema 从二进制里挖出来了（`FINDINGS.md` 第 4 节），
-响应形状、`updatedPermissions` 的六种 `type`、六种 `permissionMode` 全部拿到。
-但**这扇门在运行时关着**：
+于是实现是：
 
-- `--permission-prompts host` 只会得到一条 `system:permission_denied`，不会把提问交给外部进程。
-- `--sdk-url` 直接被拒：`host "127.0.0.1" is not an approved Anthropic endpoint`。
-  也就是说 `can_use_tool` 只对 **Anthropic 认可的 SDK 宿主**开放。
+```
+CLI ──tools/call──▶ POST /api/mcp/permission?relay=<uuid>   （本进程，loopback）
+                              │
+                              ▼
+                     registry.askByRelay()
+                              │  下发 permission_request（SSE）
+                              ▼
+                     PermissionRequestCard（三个按钮）
+                              │  用户点击
+                              ▼
+                     POST /api/sessions/:id/permissions/:requestId
+                              │  answerPermission()
+                              ▼
+                     tools/call 的结果 ──▶ CLI 继续或停下
+```
 
-代码里的痕迹：`registry.ts` 的 spawn 参数特意写了**不要加** `--permission-prompts host` 的注释；
-`POST /api/sessions/:id/permissions/:requestId` 路由与 `answerPermission()` 的完整实现
-都保留了（协议一旦放开就能直接接上），但第一版跑不到。
+`server/src/permission-relay.ts` 只负责 MCP/JSON-RPC 的信封；裁决体
+（`behavior` / `updatedPermissions` / `decisionClassification`）仍然由
+`agent/controls.ts` 构造，协议知识没有被复制一份。
 
-**所以：权限完全由 CLI 按你 `~/.claude/settings.json` 的 `permissions` 规则判定。**
-本界面能做的三件事：
+**`PermissionDeniedCard` 并没有被取代**：它是「已经拒绝」的说明，仍有它的位置
+（CLI 按规则直接拒、或用户点了拒绝之后）。两者关系见 4.3。
 
-1. **切换模式**（六态，见 4.2）
-2. **如实展示拒绝**（`PermissionDeniedCard`，见 4.3）
-3. **用户显式点击后才写 allow 规则**（不主动替你放宽权限）
+本界面能做的四件事：
+
+1. **弹卡让用户决定**（`PermissionRequestCard`：允许一次 / 总是允许 / 拒绝）
+2. **切换模式**（六态，见 4.2）
+3. **如实展示拒绝**（`PermissionDeniedCard`，见 4.3）
+4. **用户显式点击后才写 allow 规则**（不主动替你放宽权限）
 
 ### 4.2 `PermissionModeSwitch`：六态
 
@@ -209,6 +225,29 @@ POST /api/sessions/:id/prompt → 起 claude 子进程，写第一条 user 消�
 
 **归一是降级安全的**：上游不给增量，`normalize.ts` 就退化成整条一次性更新，
 内容不会错，只是没有动效。
+
+### 握手帧 `hello` 与「刷新后还能停」
+
+SSE 连接建立时服务端先发一帧 `hello`：
+
+```jsonc
+{
+  "connectionId": "…",
+  "activeSessions": ["<有活进程的会话路径>"],
+  "runningSessions": ["<其中正在跑一轮的会话路径>"]
+}
+```
+
+两者缺一不可。`activeSessions` 只管进程是否存在（空闲驻留也算），而**运行标记
+只活在浏览器内存里** —— 刷新、开新标签、或在另一个标签里打开别人开的会话，都以
+一份空标记起步。没有 `runningSessions`，卡在退避重试里的回合在刷新后既没有「停止」
+按钮，也不会再收到 `agent_start`（它早已发过），于是只能干等 CLI 放弃。
+前端把它并进 `sessionActivity`，恢复成 `"ongoing"`。
+
+另外两处容易漏的：**draft 阶段**（还没有 jsonl、`useConversation` 拿到 null 路径）
+的停止按钮靠 `sessionActivity[draftKey]` 点亮，并先 `resolveDraftSession()` 再发
+abort；**abort 的 3 秒安全超时**只允许清理「它自己那一轮」，否则会把用户紧接着
+发起的下一轮误标成已停止，症状同样是停止按钮消失。
 
 ## 十一、API 地图
 

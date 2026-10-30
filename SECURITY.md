@@ -31,19 +31,25 @@ ssh -NL 5419:127.0.0.1:5419 you@your-box
 `bypassPermissions` 模式**只在用户显式切换**时生效，切换时 UI 必须二次确认，页面上必须
 持续显示警告条。默认权限模式永远是 `default`。
 
-### 3. 权限被拒时如实展示，不假装批准
+### 3. 权限提问必须由用户亲手回答，不假装批准
 
-**本版不弹权限确认卡**——因为 Claude Code CLI 2.1.309 不把权限提问交给本进程
-（实测结论，见 `PROJECT_RULES.md` 5.5 节）。权限由 CLI 自己按你的
-`~/.claude/settings.json` 判定。
+**权限卡是真的会弹的**：CLI 通过 `--permission-prompt-tool` 调用内置 MCP 中继，
+中继把提问交给界面（`PermissionRequestCard`），用户点按钮后才回裁决
+（见 `PROJECT_RULES.md` 5.5）。
 
 本项目在这一块的责任是**不撒谎**：
 
-- 工具被 CLI 拒绝时，它发 `system:permission_denied`。UI 必须把**原始拒绝原因**
+- **三个按钮必须一一对应**：允许一次 `user_temporary`、总是允许 `user_permanent`、
+  拒绝 `user_reject`。不许把「允许一次」悄悄升级成持久规则，也不许反过来。
+- 中继的 relay id 是一次性的会话凭据，只出现在 CLI 的 MCP 配置里，
+  **不进日志、不进 argv**。
+- 工具被 CLI 直接拒绝时，它发 `system:permission_denied`。UI 必须把**原始拒绝原因**
   （含 `tool_name`、`message`、`decision_reason_type`）完整展示出来，不美化、不省略、不重写成
   「操作已取消」这种糊弄话。
 - 绝不谎称「已批准」。
 - 绝不为了让某个工具跑起来而偷偷加 `--dangerously-skip-permissions`。
+- 中继本身**不能**被当作绕过通道：它只在 CLI 主动提问时被调用，我们不主动替任何
+  工具发 `allow`。
 
 「总是允许」是唯一的写权限入口：它把规则写进 `~/.claude/settings.json` 的
 `permissions.allow`，**只由你显式点击触发**，行为与终端里 `/permissions` 一致。

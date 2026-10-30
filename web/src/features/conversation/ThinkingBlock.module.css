@@ -87,6 +87,23 @@
 }
 
 /*
+ * 这段推理流了多久，贴在行尾 —— 主人的参考图里就是这个位置（`69s`）。
+ *
+ * 数字用等宽 + tabular-nums，中文单位留给正文字体，和 `TurnProcessGroup` 里
+ * 「已完成，用时」那个数字的做法一致。它只因本浏览器实测到而存在，回读的会话
+ * 没有这颗数字（见 `ThinkingBlock.thinkingMs`）。
+ */
+.duration {
+  flex: none;
+  margin-left: 8px;
+  color: var(--dsw-alias-label-caption);
+  font-family: var(--ds-font-family-code);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/*
  * The summary is dsh's `settledReasoningPreview`. Where the policy does not ask
  * for one, a settled row is the bare "思考" line and nothing else — the text is
  * one click away, and a truncated first sentence beside the label mostly repeats
@@ -125,6 +142,135 @@
   line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* --- card variant --- */
+
+/*
+ * 卡片是「标准」及之后档位的思考行。裸行（图标 + 「思考 · 摘要」）和工具行长得
+ * 一模一样，读的人分不出哪行是推理、哪行是执行；卡片给推理自己的底色、圆角和
+ * 内边距，一眼就能把它从工具列表里摘出来。
+ *
+ * 底色用 markdown 代码块的浅色面而不是再引入一个变量：它已经是这一层里最浅的
+ * 内嵌面，且明暗两套主题都定义了，卡片和代码块并置时也不会打架。
+ */
+.card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 0.5px solid var(--dsw-alias-border-l1);
+  border-radius: 12px;
+  background: var(--dsw-alias-markdown-code-block);
+  overflow: hidden;
+}
+
+.cardHeader {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 12px;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
+  cursor: pointer;
+  transition: color 100ms ease;
+}
+
+.cardHeader:hover {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.cardLeading {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: calc(16px + var(--dsh-content-font-delta, 0px));
+  height: calc(16px + var(--dsh-content-font-delta, 0px));
+  margin-right: 6px;
+  color: inherit;
+}
+
+.cardLeading svg {
+  width: calc(14px + var(--dsh-content-font-delta, 0px));
+  height: calc(14px + var(--dsh-content-font-delta, 0px));
+}
+
+.cardTitle {
+  flex: none;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.cardChevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: 8px;
+  color: var(--dsw-alias-label-caption);
+  transition: transform 100ms ease;
+}
+
+.card[data-expanded] .cardChevron {
+  transform: rotate(180deg);
+}
+
+/*
+ * 正文和工具卡的 I/O 区间同一套排版：等宽正文反而难读，所以这里用正文字体、
+ * 次级字号、行高 20px，与裸行的 thinkBody 一致，只是左右内边距跟着卡片走。
+ */
+.cardBody {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 0 12px 10px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/*
+ * 流式中：表头沿用裸行那道横向扫光，只是被卡片的圆角裁住。不做整卡竖向光带
+ * —— 卡片可能有好几百像素高，一层半透明底色铺满整块会把正文压暗。
+ */
+.card[data-state="running"] .cardHeader::after {
+  content: "";
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--dsw-alias-bg-base) 60%, transparent) 55%,
+    transparent 100%
+  );
+  pointer-events: none;
+  width: 300px;
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  animation: dsh-thinking-card-sweep 2.6s ease-out infinite;
+}
+
+@keyframes dsh-thinking-card-sweep {
+  0% {
+    left: -300px;
+  }
+  90%,
+  100% {
+    left: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card[data-state="running"] .cardHeader::after {
+    animation: none;
+  }
+
+  .cardHeader,
+  .cardChevron {
+    transition: none;
+  }
 }
 
 .visuallyHidden {

@@ -30,23 +30,25 @@
 ## 权限与安全
 
 - **默认只绑 `127.0.0.1`，没有认证。** 不要反代到公网，见 [SECURITY.md](../SECURITY.md)。
-- **本版不弹权限确认卡。** 实测 Claude Code CLI 2.1.309 不把权限提问交给外部进程
-  （`--permission-prompts host` 只会得到一条 `system:permission_denied`；`--sdk-url` 被
-  `host is not an approved Anthropic endpoint` 拒绝，即 `can_use_tool` 只对 Anthropic
-  认可的 SDK 宿主开放）。权限完全由 CLI 按你的 `~/.claude/settings.json` 判定；
-  本项目在被拒时**如实展示原因**并给出指引，但不会、也不能替你点「允许」。
-  要交互式批准，请用终端里的 `claude`。
-
-  界面上那张卡叫 **`PermissionDeniedCard`**（文件是 `PermissionCard.tsx`），
-  它**不是**「允许 / 拒绝」按钮，只是一条拒绝说明。`POST /api/sessions/:id/permissions/:requestId`
-  这条路由的完整实现保留了，但第一版跑不到——协议一旦放开就能直接接上。
+- **权限确认卡能弹，走的是内置 MCP 中继。** CLI 需要授权时会调用
+  `--permission-prompt-tool` 指向的 MCP 工具，本项目用它自己的
+  `POST /api/mcp/permission` 回答（见 `PROJECT_RULES.md` 5.5）。卡片是
+  **`PermissionRequestCard`**：显示工具名与**原样的完整入参**，三个按钮
+  「允许一次 / 总是允许 / 拒绝」。
+  - 「总是允许」会把规则写进 `~/.claude/settings.json` 的 `permissions.allow`，
+    与终端里 `/permissions` 一致，**只由你显式点击触发**。
+  - 中继的配置文件落在系统临时目录，随会话回收删除；URL 里带一次性 relay id，
+    不写进任何日志。
+  - 如果 CLI 因为规则直接拒了（不经过中继），界面仍然显示
+    **`PermissionDeniedCard`** —— 那是一张事后的拒绝说明，没有按钮。
 - **权限模式六态**：`default`（默认，危险操作弹窗）、`acceptEdits`、`plan`、`dontAsk`、
   `auto`、`bypassPermissions`。
   - `bypassPermissions` 会让**所有**工具调用不经确认直接执行。切换时二次确认，
     开启期间页面顶部常驻警告条。本项目永不替你打开它。
   - `dontAsk` 不弹窗，未预授权的调用**直接拒绝**——它比 `default` 更严格，不是更松。
 - **permissionMode 是会话级状态，不是全局设置。** 切换只影响当前会话的进程。
-  新建会话永远从 `default` 开始。
+  新建会话默认从 `default` 开始；新建页（`NewSessionHero`）里可以先选好模式，
+  它会随 `POST /api/sessions` 一起下发给子进程，不用等会话开出来再改。
 - **「总是允许」的粒度由 Claude Code 决定。** 它给的 `permission_suggestions` 可能是
   「允许这一条命令」也可能是「允许这个工具」，UI 如实展示它建议的内容，不自己发明粒度。
 - **终端面板能执行任意命令**，它没有额外的权限确认——那是终端该有的样子。
@@ -100,6 +102,11 @@
 - **fork 创建新会话**，不截断当前会话。
 - 助手消息下的「赞/踩」没有做：没有地方可写。
 - **失败后只能「把这条 prompt 再发一次」，没有真正的重试。**
+- **上游报错（如 408 / 5xx）时，Claude Code 自己会退避重试最多 10 次**，
+  期间这一轮仍在进行中，界面显示倒计时（`RetryNotice`），「停止」按钮一直可用。
+  点停止会走 `interrupt`；实测即使正处在 30 秒以上的长退避里，也在约 0.2 秒内收尾
+  （`result.terminal_reason = "aborted_streaming"`）。若进程对 `interrupt` 毫无反应，
+  第二次点击或 2.5 秒超时后会升级为 kill 子进程。
 - compaction 的可视化还没接（Claude Code 会发 `system:compact_boundary`，第一版忽略）。
 - **代码高亮的两个上限**：超过 2 万字符的栅栏在没有可续接前缀时显示为纯文本；
   单行超过 2000 字符的一律不着色（正则引擎在这种行上会真的卡死）。

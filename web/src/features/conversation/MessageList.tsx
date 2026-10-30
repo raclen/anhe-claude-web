@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type {
   AgentMessage,
   AssistantMessage,
@@ -71,26 +72,40 @@ function BlockView({
   results,
   streaming,
   previewSettled,
+  reasoningExpanded,
+  reasoningCard,
+  toolExpanded,
   cwd,
   home,
 }: {
-  block: ContentBlock;
+  block?: ContentBlock | null;
   executions: Record<string, ToolExecution>;
   results: Record<string, ToolResultMessage>;
   streaming: boolean;
   /** Whether a settled reasoning row may carry its one-line summary. */
   previewSettled: boolean;
+  /** Whether a reasoning row's body starts open; see `TranscriptPolicy`. */
+  reasoningExpanded: boolean;
+  /** Whether a reasoning row renders as a card; see `TranscriptPolicy`. */
+  reasoningCard: boolean;
+  /** Whether a tool call's I/O card starts open; see `TranscriptPolicy`. */
+  toolExpanded: boolean;
 } & PathContext) {
+  if (!block) return null;
   if (block.type === "text") {
     const text = (block as TextBlock).text;
     return text.length > 0 ? <Markdown text={text} /> : null;
   }
   if (block.type === "thinking") {
+    const thinking = block as ThinkingBlockType;
     return (
       <ThinkingBlock
-        text={(block as ThinkingBlockType).thinking}
+        text={thinking.thinking}
+        durationMs={thinking.thinkingMs}
         streaming={streaming}
         preview={previewSettled}
+        defaultOpen={reasoningExpanded}
+        card={reasoningCard}
       />
     );
   }
@@ -117,7 +132,15 @@ function BlockView({
     }
     // 其余工具走通用卡；`ToolCallRow` 内部用 `classify()` 决定形状，
     // 而 `classify()` 已经经过 `tool-map.normalizeToolName` 归一。
-    return <ToolCallRow call={call} execution={execution} cwd={cwd} home={home} />;
+    return (
+      <ToolCallRow
+        call={call}
+        execution={execution}
+        cwd={cwd}
+        home={home}
+        defaultOpen={toolExpanded}
+      />
+    );
   }
   if (block.type === "image") {
     return <ImageThumb image={block as ImageBlock} />;
@@ -175,6 +198,10 @@ function TurnBody({
   liveProcessDetail,
   processDurationMs,
   previewSettled,
+  separateReasoning,
+  reasoningExpanded,
+  reasoningCard,
+  toolExpanded,
   cwd,
   home,
 }: {
@@ -198,6 +225,14 @@ function TurnBody({
   processDurationMs: number | null;
   /** Whether settled reasoning rows may carry their one-line summary. */
   previewSettled: boolean;
+  /** Whether reasoning is listed outside the tool group; see `TranscriptPolicy`. */
+  separateReasoning: boolean;
+  /** Whether a reasoning row's body starts open; see `TranscriptPolicy`. */
+  reasoningExpanded: boolean;
+  /** Whether a reasoning row renders as a card; see `TranscriptPolicy`. */
+  reasoningCard: boolean;
+  /** Whether a tool call's I/O card starts open; see `TranscriptPolicy`. */
+  toolExpanded: boolean;
 } & PathContext) {
   const t = useT();
   const renderStep = (step: TurnStep) => (
@@ -208,6 +243,9 @@ function TurnBody({
       results={results}
       streaming={streaming && step.tail === true}
       previewSettled={previewSettled}
+      reasoningExpanded={reasoningExpanded}
+      reasoningCard={reasoningCard}
+      toolExpanded={toolExpanded}
       cwd={cwd}
       home={home}
     />
@@ -218,7 +256,9 @@ function TurnBody({
   // the one whose status is open, which is exactly what `streaming` reports.
   const grouped = stepGrouping === "collapsed" || (stepGrouping === "history" && !streaming);
 
-  const segments = splitIntoProcessSegments(steps);
+  // 思考按档位决定是否单独成段（不进工具组）：从「标准」起单列，
+  // 简洁与详细仍然把思考和工具调用一起折 —— 那是它们的本意。
+  const segments = splitIntoProcessSegments(steps, { separateReasoning });
 
   const renderProcess = (segmentSteps: TurnStep[], index: number) => {
     const rows = segmentSteps.map((step) => renderStep(step));
@@ -262,35 +302,66 @@ function TurnBody({
     );
   }
 
-  // A folded turn gathers every process run into the one whole-turn group and
-  // keeps the answers after it, in order. The runs stay distinct inside it, so
-  // the fold reads as "this was the work, that is the reply" at both levels.
-  const processSegments: TurnStep[][] = [];
-  const answerSteps: TurnStep[] = [];
-  for (const segment of segments) {
-    if (segment.kind === "process") processSegments.push(segment.steps);
-    else answerSteps.push(...segment.steps);
-  }
-  return (
-    <div className={styles.assistantTurn}>
-      {processSegments.length > 0 ? (
-        <TurnProcessGroup durationMs={processDurationMs}>
-          {processSegments.map((segmentSteps, index) => renderProcess(segmentSteps, index))}
-        </TurnProcessGroup>
-      ) : null}
-      {answerSteps.map((step, index) => (
+  // A folded turn gathers this turn's tool runs behind the whole-turn header
+  // ("已完成，用时 X秒") and keeps the answers in order.
+  //
+  // 推理段不进这个整轮折叠。整轮折叠存在的意义是替主人收好「工具在干活」那一堆
+  // 行；而思考正是主人从「标准」档起唯一想看的东西，把它也收进去就等于让这个
+  // 档位的名字成了空话。它也不能被提到轮次最前面 —— 一轮里常常是
+  // 思考 → 工具 → 思考 → 工具 → 回答，挪到顶部就等于改写了顺序。所以按原位
+  // 切开：每遇到推理就直接显示，前后的工具段各自折成一组。
+  const rendered: ReactNode[] = [];
+  let pendingProcess: { steps: TurnStep[]; index: number }[] = [];
+  let groupCount = 0;
+  let durationUsed = false;
+  const flushProcess = (): void => {
+    if (pendingProcess.length === 0) return;
+    const runs = pendingProcess;
+    pendingProcess = [];
+    groupCount += 1;
+    rendered.push(
+      <TurnProcessGroup
+        key={`process-${String(groupCount)}`}
+        // 用时只挂在第一组上：它是这一整轮的数字，重复几遍只会像坏掉。
+        durationMs={durationUsed ? null : processDurationMs}
+      >
+        {runs.map((run) => renderProcess(run.steps, run.index))}
+      </TurnProcessGroup>,
+    );
+    durationUsed = true;
+  };
+  segments.forEach((segment, index) => {
+    if (segment.kind === "process") {
+      pendingProcess.push({ steps: segment.steps, index });
+      return;
+    }
+    flushProcess();
+    if (segment.kind === "reasoning") {
+      for (const step of segment.steps) {
+        rendered.push(
+          <Fragment key={`reasoning-${String(step.messageIndex)}-${String(step.blockIndex)}`}>
+            {renderStep(step)}
+          </Fragment>,
+        );
+      }
+      return;
+    }
+    segment.steps.forEach((step, answerIndex) => {
+      rendered.push(
         // The wrapper exists only to carry dsh's `data-turn-process-answer`
         // flag: it is what tells the flow gap to tighten to 8px for the answer
         // that ends the group above it.
         <div
           key={`${String(step.messageIndex)}-${String(step.blockIndex)}`}
-          data-turn-process-answer={index === 0 || undefined}
+          data-turn-process-answer={answerIndex === 0 || undefined}
         >
           {renderStep(step)}
-        </div>
-      ))}
-    </div>
-  );
+        </div>,
+      );
+    });
+  });
+  flushProcess();
+  return <div className={styles.assistantTurn}>{rendered}</div>;
 }
 
 /**
@@ -303,7 +374,7 @@ function assistantTextOf(messages: AgentMessage[]): string {
   return messages
     .filter((message) => message.role === "assistant")
     .flatMap((message) => (message as AssistantMessage).content ?? [])
-    .filter((block): block is TextBlock => block.type === "text")
+    .filter((block): block is TextBlock => Boolean(block) && block.type === "text")
     .map((block) => block.text)
     .join("\n\n");
 }
@@ -503,6 +574,7 @@ export function MessageList({
   transcriptView = "detailed",
   onFork,
   onOpenChanges,
+  onOpenFile,
   onTurnChanges,
   onRetry,
 }: {
@@ -518,6 +590,10 @@ export function MessageList({
    */
   onOpenChanges?: (turn: number, index: number) => void;
   /**
+   * Preview a project file in the right sidebar's Preview tab.
+   */
+  onOpenFile?: (path: string) => void;
+  /**
    * Publish every turn's changed files for the sidebar's review tab to read.
    * Absent means the review tab has nothing to draw — its data lives nowhere
    * else, because this project keeps no workspace snapshot to ask a server for.
@@ -530,8 +606,16 @@ export function MessageList({
   onRetry?: (text: string, images: ImageBlock[]) => void;
 } & PathContext) {
   const t = useT();
-  const { foldCompletedTurns, stepGrouping, liveProcessDetail, settledReasoningPreview } =
-    transcriptPolicyFor(transcriptView);
+  const {
+    foldCompletedTurns,
+    stepGrouping,
+    liveProcessDetail,
+    settledReasoningPreview,
+    separateReasoning,
+    reasoningExpanded,
+    reasoningCard,
+    toolExpanded,
+  } = transcriptPolicyFor(transcriptView);
   const scrollRef = useRef<HTMLDivElement>(null);
   // The message column, watched so that a fold or an image load — anything that
   // resizes the transcript without touching `view.messages` — still puts a
@@ -880,6 +964,7 @@ export function MessageList({
             if (message.role === "user") return;
             const content = (message as AssistantMessage).content ?? [];
             content.forEach((block, blockIndex) => {
+              if (!block) return;
               // A committed tool call carries no `live` flag, so a turn whose
               // current work is a tool — nothing streaming right now — would
               // otherwise read as settled. The execution's own running state is
@@ -906,13 +991,14 @@ export function MessageList({
           const isLiveTurn = group.turn === liveTurn;
           if (isLiveTurn && hasPartial) {
             const messageIndex = group.messages.length;
-            partial.forEach((block, blockIndex) => {
+            const validPartial = partial.filter((block): block is ContentBlock => Boolean(block));
+            validPartial.forEach((block, blockIndex) => {
               steps.push({
                 block,
                 messageIndex,
                 blockIndex,
                 live: true,
-                tail: blockIndex === partial.length - 1,
+                tail: blockIndex === validPartial.length - 1,
               });
             });
           }
@@ -974,6 +1060,10 @@ export function MessageList({
                   // line beside "思考" and leaves the text one click away; every
                   // other mode keeps it.
                   previewSettled={settledReasoningPreview}
+                  separateReasoning={separateReasoning}
+                  reasoningExpanded={reasoningExpanded}
+                  reasoningCard={reasoningCard}
+                  toolExpanded={toolExpanded}
                   cwd={cwd}
                   home={home}
                 />
@@ -1004,6 +1094,7 @@ export function MessageList({
                   files={turnFilesByTurn.get(group.turn) ?? []}
                   turn={group.turn}
                   {...(onOpenChanges === undefined ? {} : { onOpenChanges })}
+                  {...(onOpenFile === undefined ? {} : { onOpenFile })}
                 />
               ) : null}
               {group.messages.some((message) => message.role === "assistant") ? (
@@ -1027,13 +1118,15 @@ export function MessageList({
          */}
         {hasPartial && !partialMerged ? (
           <TurnBody
-            steps={partial.map((block, blockIndex) => ({
-              block,
-              messageIndex: -1,
-              blockIndex,
-              live: true,
-              tail: blockIndex === partial.length - 1,
-            }))}
+            steps={partial
+              .filter((block): block is ContentBlock => Boolean(block))
+              .map((block, blockIndex, list) => ({
+                block,
+                messageIndex: -1,
+                blockIndex,
+                live: true,
+                tail: blockIndex === list.length - 1,
+              }))}
             executions={view.toolExecutions}
             results={results}
             streaming={view.isStreaming}
@@ -1048,6 +1141,10 @@ export function MessageList({
             // attach to, so there is no start or end stamp anywhere.
             processDurationMs={null}
             previewSettled={settledReasoningPreview}
+            separateReasoning={separateReasoning}
+            reasoningExpanded={reasoningExpanded}
+            reasoningCard={reasoningCard}
+            toolExpanded={toolExpanded}
             cwd={cwd}
             home={home}
           />

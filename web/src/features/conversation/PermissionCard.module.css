@@ -79,3 +79,147 @@
 .helpList li {
   margin: 1px 0;
 }
+
+/*
+ * ── 权限提问卡（正在等主人回答）─────────────────────────────────────────
+ *
+ * 与上面的「拒绝说明」共用一套排版语言，但信号相反：那条是已经发生的事实，
+ * 用的是克制的红边；这张是**正在阻塞一轮**的提问，所以边框更明确、按钮更实在。
+ */
+
+.request {
+  margin: 8px 0;
+  border: 1px solid var(--dsw-alias-border-primary, rgba(128, 128, 128, 0.28));
+  border-left: 3px solid #d19a2a;
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-primary, #fff);
+  overflow: hidden;
+}
+
+.requestHeader {
+  padding: 10px 12px 0;
+}
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.eyebrowText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eyebrowAction {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.requestTitleRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 18px;
+}
+
+.requestDescription {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.requestBlocked {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/*
+ * 入参：完整、可滚动、不裁剪。`max-height` 是唯一的约束 —— 一个几万字符的
+ * 文件内容不能把整张卡撑到屏幕外，但主人必须能滚到每一个字。
+ */
+.requestInput {
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-secondary, rgba(128, 128, 128, 0.08));
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.requestFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.requestActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 三个按钮共用的骨架。 */
+.denyButton,
+.alwaysButton,
+.allowButton {
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.denyButton {
+  border: 1px solid var(--dsw-alias-border-primary, rgba(128, 128, 128, 0.28));
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.denyButton:hover:not(:disabled) {
+  border-color: #c0392b;
+  color: #c0392b;
+}
+
+.alwaysButton {
+  border: 1px solid var(--dsw-alias-border-primary, rgba(128, 128, 128, 0.28));
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.allowButton {
+  border: 1px solid transparent;
+  background: var(--dsw-alias-bg-inverse, #1f2328);
+  color: var(--dsw-alias-label-inverse, #fff);
+  font-weight: 600;
+}
+
+.denyButton:disabled,
+.alwaysButton:disabled,
+.allowButton:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

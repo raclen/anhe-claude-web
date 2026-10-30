@@ -69,9 +69,9 @@
  * 4px on the left so the mark lines up with the section header's label (both
  * land at 16px from the column edge), and a 4px foot before the New Session bar.
  *
- * The mark is this project's own artwork — a black tile with a white π, the
- * same bitmap the desktop build ships as its window icon; it is cropped to a
- * squircle by the radius below. What is matched is the 24px identity height dsh
+ * The mark is this project's own artwork — a black tile with Claude's clay-
+ * orange spark, the same vector the tab icon and the installed window icon
+ * draw; it is cropped to a squircle by the radius below. What is matched is the 24px identity height dsh
  * gives its mark-and-name group, and the 18px/600 name on
  * a 24px line with the 0.04em tracking. The name is longer than a wordmark, so
  * the row clips rather than wraps.

@@ -14,6 +14,7 @@ import { useReferenceDraft } from "./useReferenceDraft.ts";
 import { ContextMeter } from "./ContextMeter.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
 import { PermissionModeSwitch, type PermissionMode } from "./PermissionModeSwitch.tsx";
+import { ThinkingPicker } from "./ThinkingPicker.tsx";
 import { SlashMenu } from "./SlashMenu.tsx";
 import { useSlashCompletion } from "./useSlashCompletion.ts";
 import styles from "./Composer.module.css";
@@ -39,6 +40,8 @@ export interface ComposerSession {
    */
   permissionMode?: PermissionMode | null;
   onChangePermissionMode?(mode: PermissionMode): void;
+  thinkingLevel?: string | null;
+  onChangeThinkingLevel?(level: string): void;
 }
 
 export interface ComposerProps {
@@ -261,6 +264,14 @@ export function Composer({
             <PermissionModeSwitch
               mode={session.permissionMode ?? null}
               onChange={(mode) => session.onChangePermissionMode?.(mode)}
+            />
+          ) : null}
+
+          {session ? (
+            <ThinkingPicker
+              level={session.thinkingLevel ?? "auto"}
+              disabled={session.model ? !session.model.reasoning : false}
+              onChange={(level) => session.onChangeThinkingLevel?.(level)}
             />
           ) : null}
 

@@ -3,6 +3,7 @@ import clsx from "clsx";
 import { Glyph, type GlyphName } from "../../components/dsh-icons.tsx";
 import { actions } from "../../lib/app-state.ts";
 import { GeneralSection } from "./GeneralSection.tsx";
+import { InstallSection } from "./InstallSection.tsx";
 import { McpSection } from "./McpSection.tsx";
 import { ModelsSection } from "./ModelsSection.tsx";
 import { PluginsSection } from "./PluginsSection.tsx";

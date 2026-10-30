@@ -37,6 +37,18 @@ export const HOST = process.env.ANHE_CLAUDE_WEB_HOST ?? "127.0.0.1";
 /** 会话进程多久没活动就回收。 */
 export const IDLE_TIMEOUT_MS = Number(process.env.ANHE_CLAUDE_WEB_IDLE_MS ?? 10 * 60 * 1000);
 
+/**
+ * 一张权限卡等用户回答的上限。
+ *
+ * 到点仍未回答就回一个 deny，让 CLI 走它自己的默认路径 —— 挂着的 MCP 调用
+ * 会一直阻塞那一轮，不能无限期等下去。这个值是「用户离开键盘去泡杯茶」的量级，
+ * 不是「网络超时」的量级。
+ */
+export const PERMISSION_RELAY_TIMEOUT_MS = positiveInt(
+  process.env.ANHE_CLAUDE_WEB_PERMISSION_TIMEOUT_MS,
+  30 * 60 * 1000,
+);
+
 /** 同时存活的 claude 子进程上限。 */
 export const MAX_ACTIVE_SESSIONS = Number(process.env.ANHE_CLAUDE_WEB_MAX_SESSIONS ?? 8);
 

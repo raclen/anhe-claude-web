@@ -17,6 +17,7 @@ import {
   type TitleModelChoice,
   type TranscriptDisplay,
 } from "../../lib/types.ts";
+import { InstallSection } from "./InstallSection.tsx";
 import {
   SettingsCubes,
   SettingsGroup,
@@ -329,6 +330,13 @@ export function GeneralSection({ className }: { className?: string }) {
             }}
           />
         </SettingsRow>
+
+        {/*
+          安装。放在通知下面：两者都是关于「这个浏览器」而不是关于 agent 的
+          偏好。它自己管三种状态（可编程安装 / 只能手动 / 已经装上），所以
+          这里不带条件地渲染一行，而不是在调用方判断。
+        */}
+        <InstallSection />
 
         {/*
           Last, because it answers a question about the app itself rather than

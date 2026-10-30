@@ -69,6 +69,71 @@ function toContentBlock(block: unknown): ContentBlock | null {
   }
 }
 
+/**
+ * `structuredPatch` 的一个 hunk —— Claude Code 的 Edit / Write 结果里就有它。
+ *
+ * `lines` 与 unified diff 的正文同形：首个字符是 ` ` / `+` / `-`。这正是为什么
+ * 下面拼 patch 时不需要再理解内容，只需要补一行 `@@` 头。
+ */
+interface StructuredHunk {
+  oldStart?: unknown;
+  oldLines?: unknown;
+  newStart?: unknown;
+  newLines?: unknown;
+  lines?: unknown;
+}
+
+/**
+ * 一个 `structuredPatch` 数组 → unified diff 文本。
+ *
+ * 存在的理由：前端的改动卡片只认 `details.patch`（见 `turn-files.patchOf`），而
+ * Claude Code 给的是结构化 hunk，不是 patch 文本。转换放在这里而不是前端，是因为
+ * 这是**协议形状**的知识 —— 按 PROJECT_RULES 的组织约定，它只该出现在本文件。
+ *
+ * 实测（CLI 2.1.309）两个入口的字段名不同，但 `structuredPatch` 本身一致：
+ * - 实时流 `stream-json`：顶层 `tool_use_result`（snake_case）
+ * - 历史 jsonl：顶层 `toolUseResult`（camelCase）
+ *
+ * 返回 null 表示「没有可用的 patch」：不携带、不是数组、或者一个 hunk 都没有。
+ * 调用方据此保持 `details` 原样，而不是塞一个空 patch 让计数变成 0。
+ */
+function patchFromStructured(structured: unknown): string | null {
+  if (!Array.isArray(structured) || structured.length === 0) return null;
+  const hunks: string[] = [];
+  for (const item of structured) {
+    if (typeof item !== "object" || item === null) continue;
+    const hunk = item as StructuredHunk;
+    if (!Array.isArray(hunk.lines)) continue;
+    // `@@ -1,3 +1,3 @@`：缺省字段按 unified diff 的默认值补 1 / 0，避免拼出 `NaN`。
+    const oldStart = typeof hunk.oldStart === "number" ? hunk.oldStart : 1;
+    const oldLines = typeof hunk.oldLines === "number" ? hunk.oldLines : 0;
+    const newStart = typeof hunk.newStart === "number" ? hunk.newStart : 1;
+    const newLines = typeof hunk.newLines === "number" ? hunk.newLines : 0;
+    const body = hunk.lines.filter((line): line is string => typeof line === "string");
+    hunks.push(`@@ -${String(oldStart)},${String(oldLines)} +${String(newStart)},${String(newLines)} @@`);
+    hunks.push(...body);
+  }
+  return hunks.length === 0 ? null : hunks.join("\n");
+}
+
+/**
+ * 工具结果里那份「工具自己的细节」→ 前端 `ToolResultMessage.details`。
+ *
+ * 前端只认一个字段：`details.patch`。除此之外原样透传，因为别的工具视图
+ * （待办清单读 `details.todos` / `details.tasks`）也走这条路。
+ *
+ * 原样透传是安全的：`parseTodoSnapshot` 只认数组字段，多一个 `structuredPatch`
+ * 不会让它误判；而 `turn-files.patchOf` 只认字符串 `patch`。
+ */
+function toToolDetails(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const details = raw as Record<string, unknown>;
+  const patch = patchFromStructured(details.structuredPatch);
+  // 没有 patch 时返回原对象而不是 `{...details, patch: undefined}`，免得前端
+  // `details.patch` 存在但为 undefined 时被误当成「有 patch」。
+  return patch === null ? details : { ...details, patch };
+}
+
 /** 一个正在拼装的 content block。 */
 interface BlockSlot {
   kind: "text" | "thinking" | "toolcall" | "other";
@@ -98,6 +163,9 @@ export class Normalizer {
   private startedTools = new Set<string>();
   /** 当前是否有一条 assistant 消息正在拼装（已发 message_start、未发 message_end）。 */
   private messageOpen = false;
+  /** 是否处于 API 重试退避中。 */
+  private inRetry = false;
+  private retryAttempt = 0;
 
   /** 喂一行解析好的对象，拿回要推给前端的归一化事件。 */
   push(raw: unknown): NormalizedEvent[] {
@@ -168,11 +236,13 @@ export class Normalizer {
       return [{ type: "compaction", summary: event.summary ?? null }];
     }
     if (subtype === "api_retry") {
+      this.inRetry = true;
+      this.retryAttempt = typeof event.attempt === "number" ? event.attempt : 1;
       // 上游在退避重试。前端已有 `auto_retry_start` 的处理，复用它能立刻显示倒计时。
       return [
         {
           type: "auto_retry_start",
-          attempt: event.attempt,
+          attempt: this.retryAttempt,
           maxAttempts: event.max_retries,
           delayMs: typeof event.retry_delay_ms === "number" ? event.retry_delay_ms : 0,
           errorMessage: event.error ?? "",
@@ -191,6 +261,14 @@ export class Normalizer {
 
     switch (sse.type) {
       case "message_start": {
+        if (this.inRetry) {
+          this.inRetry = false;
+          out.push({
+            type: "auto_retry_end",
+            attempt: this.retryAttempt,
+            success: true,
+          });
+        }
         this.sawStreamEvents = true;
         this.slots.clear();
         this.beginStream(out);
@@ -340,6 +418,14 @@ export class Normalizer {
     }
 
     this.beginStream(out);
+    if (this.inRetry) {
+      this.inRetry = false;
+      out.push({
+        type: "auto_retry_end",
+        attempt: this.retryAttempt,
+        success: true,
+      });
+    }
     // 只有「整条消息一次性到达」时才补 `message_start`。
     // 用 `messageOpen` 而不是 `sawStreamEvents` 判断：后者在上一条消息定稿时就被
     // 重置了，于是同一条已经通过增量走完的消息会被再补一个空槽 —— 前端就会看到
@@ -414,7 +500,10 @@ export class Normalizer {
       out.push({
         type: "tool_execution_end",
         toolCallId,
-        result: { content: resultContent },
+        // 实时流把工具细节放在事件**顶层**、snake_case 的 `tool_use_result`，
+        // 与历史 jsonl 的 camelCase `toolUseResult` 不是同一个名字（实测 CLI
+        // 2.1.309）。两个都认，是因为这里同时服务实时流与回放。
+        result: { content: resultContent, details: toToolDetails(event["tool_use_result"]) },
         isError: raw.is_error === true,
       });
     }
@@ -423,6 +512,14 @@ export class Normalizer {
 
   private onResult(event: Record<string, unknown>): NormalizedEvent[] {
     const out: NormalizedEvent[] = [];
+    if (this.inRetry) {
+      this.inRetry = false;
+      out.push({
+        type: "auto_retry_end",
+        attempt: this.retryAttempt,
+        success: event.is_error !== true,
+      });
+    }
     out.push({
       type: "turn_result",
       subtype: event.subtype,
@@ -486,12 +583,22 @@ export class Normalizer {
 
   /** 进程退出时收尾，避免前端永远停在 streaming。 */
   finalize(reason: string): NormalizedEvent[] {
-    if (!this.streaming) return [];
+    const out: NormalizedEvent[] = [];
+    if (this.inRetry) {
+      this.inRetry = false;
+      out.push({
+        type: "auto_retry_end",
+        attempt: this.retryAttempt,
+        success: false,
+      });
+    }
+    if (!this.streaming) return out;
     this.streaming = false;
     this.slots.clear();
     this.sawStreamEvents = false;
     this.messageOpen = false;
-    return [{ type: "agent_settled", reason }];
+    out.push({ type: "agent_settled", reason });
+    return out;
   }
 
   // -- 内部工具 ------------------------------------------------------------

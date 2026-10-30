@@ -7,7 +7,7 @@
  * the part that silently rots — can be tested directly.
  */
 import type { MessageKey, Translate } from "../../lib/i18n/index.ts";
-import { normalizeToolName } from "./tool-map.ts";
+import { normalizeToolName, parseMcpToolName } from "./tool-map.ts";
 
 
 /** Row variant: decides both the glyph and the title. */
@@ -31,21 +31,12 @@ export const TOOL_VARIANTS: Record<string, Variant> = {
 };
 
 /**
- * The row title per variant — dsh's `VARIANT_TITLE_KEYS`, resolved through the
- * message table rather than frozen at module load: switching the interface
- * language has to re-label rows that are already on screen.
+ * 行标题不在这里决定。
+ *
+ * 转录里一段话常混着几个不同工具，按 variant 翻译成中文词（`Read` / `Glob` 都读成
+ * 「读取 / 搜索」）就看不出实际调用的是哪个。标题现在直接用真实工具名 —— 见
+ * `tool-map.toolRowTitle`。variant 仍然决定图标和摘要规则，只是不再决定名字。
  */
-export function variantTitles(t: Translate): Record<Variant, string> {
-  return {
-    bash: "Bash",
-    read: t("tool.read"),
-    write: t("tool.write"),
-    edit: t("tool.edit"),
-    search: t("tool.search"),
-    code: t("tool.code"),
-    others: t("tool.others"),
-  };
-}
 
 /** Which argument best describes the call, in priority order — dsh's SUMMARY_KEYS. */
 export const SUMMARY_KEYS: Record<Variant, string[]> = {
@@ -177,8 +168,21 @@ export function deriveSummary(variant: Variant, args: Record<string, unknown> | 
  * but it must never be swallowed into a collapsed group, so it counts as an
  * answer.
  */
-function isProcessBlock(block: { type?: string }): boolean {
-  return block.type === "thinking" || block.type === "toolCall";
+function isProcessBlock(block?: { type?: string } | null): boolean {
+  return block?.type === "thinking" || block?.type === "toolCall";
+}
+
+/**
+ * A reasoning block, as opposed to the tool calls that share its "process"
+ * category.
+ *
+ * 「对话显示」这个设置的字面意思是「想看多少**工具调用**细节」，思考过程不属于
+ * 工具调用。所以除「简洁」以外的档位都把思考从工具组里摘出来单独成段直接显示 ——
+ * 主人把它调到「详细」，要的就是能读到推理，而不是点开两层折叠才发现里面只有
+ * 一行摘要。
+ */
+function isReasoningBlock(block?: { type?: string } | null): boolean {
+  return block?.type === "thinking";
 }
 
 /**
@@ -201,13 +205,14 @@ function isProcessBlock(block: { type?: string }): boolean {
  * reasoning block or tool call still lands in `process`. Only a live *answer*
  * block stays out — a group would hide the text the reader is watching arrive.
  */
-export function splitForCompact<T extends { block: { type?: string }; live?: boolean }>(steps: T[]): {
+export function splitForCompact<T extends { block?: { type?: string } | null; live?: boolean }>(steps: T[]): {
   process: T[];
   answers: T[];
 } {
   const process: T[] = [];
   const answers: T[] = [];
   for (const step of steps) {
+    if (!step?.block) continue;
     // Process blocks are folded whether or not they have settled; answers never
     // are, streaming or not.
     (isProcessBlock(step.block) ? process : answers).push(step);
@@ -310,23 +315,39 @@ function prepareTitleKey(activity: ProcessActivity): MessageKey {
 }
 
 /**
- * One ordered run of a turn's steps: either process (thinking + tool calls) or
- * answers. Ported from dsh's process grouping, which cuts a Turn at every reply
- * or user input. A still-streaming process step lands in a process run like any
- * other: dsh's `stepGrouping` 'collapsed' folds a running turn too, and the
- * group's live header — not the row itself — is what says what is happening.
+ * One ordered run of a turn's steps: either process (thinking + tool calls),
+ * reasoning on its own, or answers. Ported from dsh's process grouping, which
+ * cuts a Turn at every reply or user input. A still-streaming process step lands
+ * in a process run like any other: dsh's `stepGrouping` 'collapsed' folds a
+ * running turn too, and the group's live header — not the row itself — is what
+ * says what is happening.
+ *
+ * `reasoning` is this project's addition, not dsh's: see `isReasoningBlock`.
  */
 export type ProcessSegment<T> =
   | { kind: "process"; steps: T[] }
+  | { kind: "reasoning"; steps: T[] }
   | { kind: "answer"; steps: T[] };
 
-/** Cut a turn's steps into ordered process / answer runs. */
+/**
+ * Cut a turn's steps into ordered process / reasoning / answer runs.
+ *
+ * `separateReasoning` keeps thinking out of the tool group, so a display mode
+ * that promises to show the reasoning does not bury it behind a fold titled
+ * after tools (see `isReasoningBlock`).
+ */
 export function splitIntoProcessSegments<
-  T extends { block: { type?: string }; live?: boolean },
->(steps: T[]): ProcessSegment<T>[] {
+  T extends { block?: { type?: string } | null; live?: boolean },
+>(steps: T[], options: { separateReasoning?: boolean } = {}): ProcessSegment<T>[] {
   const segments: ProcessSegment<T>[] = [];
   for (const step of steps) {
-    const kind = isProcessBlock(step.block) ? "process" : "answer";
+    if (!step?.block) continue;
+    const kind =
+      options.separateReasoning === true && isReasoningBlock(step.block)
+        ? "reasoning"
+        : isProcessBlock(step.block)
+          ? "process"
+          : "answer";
     const last = segments[segments.length - 1];
     if (last !== undefined && last.kind === kind) last.steps.push(step);
     else segments.push({ kind, steps: [step] });
@@ -402,13 +423,14 @@ export interface ProcessSegmentTitle {
  * so it takes the present-tense activity label rather than a finished summary.
  */
 export function processSegmentTitle<
-  T extends { block: { type?: string }; live?: boolean; running?: boolean },
+  T extends { block?: { type?: string } | null; live?: boolean; running?: boolean },
 >(steps: T[], t: Translate, open = false): ProcessSegmentTitle {
   const counts = new Map<ProcessActivity, number>();
   let running: ProcessActivity | undefined;
   let preparing = false;
   let detail: string | undefined;
   for (const step of steps) {
+    if (!step?.block) continue;
     const active = step.live === true || step.running === true;
     if (step.block.type === "toolCall") {
       const block = step.block as { name?: string; arguments?: Record<string, unknown> };

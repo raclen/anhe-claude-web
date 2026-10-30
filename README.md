@@ -54,7 +54,8 @@ npx anhe-claude-web --no-open       # 不自动开浏览器
 | 能力 | 说明 |
 | --- | --- |
 | 对话 | 流式输出、思考折叠、工具调用卡片、Markdown + 代码高亮 |
-| **权限模式** | 六态切换：`default` / `acceptEdits` / `plan` / `dontAsk` / `auto` / `bypassPermissions`；危险模式二次确认 |
+| **权限模式** | 六态切换：`default` / `acceptEdits` / `plan` / `dontAsk` / `auto` / `bypassPermissions`；危险模式二次确认。**新建会话页也能先选好模式**，随建会话请求一起下发给子进程 |
+| **权限确认卡** | CLI 要授权时弹卡：工具名 + 原样完整入参 +「允许一次 / 总是允许 / 拒绝」 |
 | **拒绝可见** | 工具被拒时不静默失败，展示 Claude Code 报的原始原因（不截断）+ 「怎么放开」清单 |
 | 中断与续聊 | 随时打断；会话落盘，刷新页面从 `~/.claude/projects` 恢复 |
 | 多会话并行 | 每个会话一个独立 `claude` 子进程；空闲自动回收，再聊自动 `--resume` |
@@ -62,12 +63,13 @@ npx anhe-claude-web --no-open       # 不自动开浏览器
 | 右栏 IDE | 文件树、Git 变更、终端、文件预览 |
 | 斜杠命令 | Claude Code 自己的 `commands[]` 全量接进来，另加内置的 `/clear` `/compact` `/cost` |
 
-> **关于「弹出权限确认卡片」：本版本做不到，但不是偷懒。**
-> Claude Code 2.1.309 只允许 Anthropic 批准的 SDK 宿主接收 `can_use_tool` 提问，
-> 第三方宿主用 `--sdk-url` 会被直接拒（`host "127.0.0.1" is not an approved
-> Anthropic endpoint`）。所以权限仍然由 CLI 自己按你 `settings.json` 的
-> `permissions` 规则判定 —— 本界面能做的是**切换模式**、**如实展示被拒原因**，
-> 以及在你显式点击后才往配置里写一条 allow 规则。详见
+> **关于「弹出权限确认卡片」：能弹，走内置 MCP 中继。**
+> CLI 需要授权时会调用 `--permission-prompt-tool` 指向的 MCP 工具，这个工具由
+> 本项目自己实现（一个 loopback 上的 HTTP 端点），于是提问能直接送到界面：
+> 卡片显示工具名和**原样的完整入参**，三个按钮「允许一次 / 总是允许 / 拒绝」。
+> 「总是允许」在你显式点击后才往 `~/.claude/settings.json` 写一条 allow 规则。
+> 全程不碰 `--dangerously-skip-permissions`，也不伪造 SDK 宿主。
+> 细节见 [PROJECT_RULES.md](./PROJECT_RULES.md) 5.5 与
 > [docs/known-limitations.md](./docs/known-limitations.md)。
 
 ## 安全

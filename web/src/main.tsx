@@ -8,11 +8,17 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import { appStore } from "./lib/app-state.ts";
 import { markDocumentPlatform } from "./lib/desktop.ts";
+import { registerServiceWorker } from "./lib/pwa.ts";
 import { applyAppearance, watchSystemAppearance } from "./lib/theme.ts";
 
 // Before the first mount, so the macOS sidebar tint is already in force when
 // the shell paints its first frame (see the function's note).
 markDocumentPlatform();
+
+// Only the registration lives here: the `beforeinstallprompt` listener is
+// attached when `lib/pwa.ts` is evaluated, and the settings page imports it
+// statically, so it is already listening before the first render.
+registerServiceWorker();
 
 const container = document.getElementById("root");
 if (!container) {

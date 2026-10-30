@@ -50,6 +50,8 @@ export interface StoreData {
   sessionOverrides: Record<string, SessionOverride>;
   /** Shell-wide preferences owned by this Web UI (never written into pi's config). */
   settings: WebSettings;
+  /** CLI 观测到的会话窗口；按会话与模型隔离，不能当成模型固定容量。 */
+  sessionContextWindows: Record<string, { model: string | null; contextWindow: number }>;
 }
 
 /** Appearance preference; `system` follows the OS colour scheme. */
@@ -64,15 +66,19 @@ export type LanguagePreference = "system" | "zh-CN" | "en";
 
 /**
  * How turns present their process content (thinking + tool calls). Ported from
- * dsh's `ui-chat` transcript-view setting, which offers four modes; the two
- * axes that separate them are dsh's `foldCompletedTurns` (on everywhere but
- * `verbose`) and its `stepGrouping` (whether a *running* turn folds too):
+ * dsh's `ui-chat` transcript-view setting, which offers four modes; the axes
+ * that separate them here are dsh's `foldCompletedTurns`, its `stepGrouping`
+ * (whether a turn's stretches fold behind a per-stretch header), its
+ * `settledReasoningPreview` (whether a settled reasoning row keeps its one-line
+ * summary), plus this project's `separateReasoning` / `reasoningCard`:
  *
- * - `compact` folds a finished turn and a running one, and hides a settled
- *   reasoning row's one-line summary (dsh's `settledReasoningPreview`).
- * - `standard` — dsh's desktop default — folds both and keeps that summary.
- * - `detailed` folds a finished turn but leaves a running one in place.
- * - `verbose` folds nothing.
+ * - `compact` folds a running turn and a finished one, and hides thinking
+ *   entirely inside the tool group.
+ * - `standard` stops folding the process: every tool call row stays visible,
+ *   and thinking becomes its own collapsed card (icon, one-line summary,
+ *   duration) — the visible difference that used to be missing.
+ * - `detailed` keeps that flat process and opens the reasoning text by default.
+ * - `verbose` also opens every tool's input and output.
  */
 export type TranscriptDisplay = "compact" | "standard" | "detailed" | "verbose";
 
@@ -175,7 +181,13 @@ export function defaultSettings(): WebSettings {
 }
 
 function emptyStore(): StoreData {
-  return { version: 1, projects: [], sessionOverrides: {}, settings: defaultSettings() };
+  return {
+    version: 1,
+    projects: [],
+    sessionOverrides: {},
+    settings: defaultSettings(),
+    sessionContextWindows: {},
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -211,7 +223,23 @@ function normalize(raw: unknown): StoreData {
       if (Object.keys(override).length > 0) sessionOverrides[key] = override;
     }
   }
-  return { version: 1, projects, sessionOverrides, settings: normalizeSettings(raw.settings) };
+  const sessionContextWindows: StoreData["sessionContextWindows"] = {};
+  if (isRecord(raw.sessionContextWindows)) {
+    for (const [key, value] of Object.entries(raw.sessionContextWindows)) {
+      if (!isRecord(value)) continue;
+      const { model, contextWindow } = value;
+      if (model !== null && typeof model !== "string") continue;
+      if (typeof contextWindow !== "number" || !Number.isInteger(contextWindow) || contextWindow <= 0) continue;
+      sessionContextWindows[key] = { model, contextWindow };
+    }
+  }
+  return {
+    version: 1,
+    projects,
+    sessionOverrides,
+    settings: normalizeSettings(raw.settings),
+    sessionContextWindows,
+  };
 }
 
 /**
@@ -318,4 +346,26 @@ async function persist(data: StoreData): Promise<void> {
 /** Test seam: drop the in-memory cache so the next read hits disk. */
 export function resetStoreCache(): void {
   cache = null;
+}
+
+/** CLI 的有效窗口按会话保存；相同模型的不同会话可能使用不同压缩阈值。 */
+export async function rememberSessionWindow(
+  sessionPath: string,
+  model: string | null,
+  contextWindow: number,
+): Promise<void> {
+  if (sessionPath.length === 0 || !Number.isInteger(contextWindow) || contextWindow <= 0) return;
+  const store = await readStore();
+  const previous = store.sessionContextWindows[sessionPath];
+  if (previous?.model === model && previous.contextWindow === contextWindow) return;
+  await mutateStore((draft) => {
+    draft.sessionContextWindows[sessionPath] = { model, contextWindow };
+  });
+}
+
+/** 只复用同一会话、同一模型的窗口；旧版模型级缓存无法证明适用于此会话。 */
+export async function knownSessionWindow(sessionPath: string, model: string | null): Promise<number> {
+  const store = await readStore();
+  const known = store.sessionContextWindows[sessionPath];
+  return known?.model === model ? known.contextWindow : 0;
 }

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -86,17 +86,18 @@ export async function listModels(currentModel?: string | null): Promise<Composer
     const trimmed = id.trim();
     if (trimmed.length === 0 || seen.has(trimmed)) return;
     seen.add(trimmed);
-    const perModel = settings.modelSettings?.[trimmed];
+    const cleanId = trimmed.replace(/\[.*?\]$/, "");
+    const perModel = settings.modelSettings?.[trimmed] ?? settings.modelSettings?.[cleanId];
+    // 只有在显式设置 supportsReasoning: false 时才禁用
+    const explicitlyDisabled = perModel?.supportsReasoning === false;
+    const reasoning = reasoningHint ?? !explicitlyDisabled;
     models.push({
       provider: "claude",
       id: trimmed,
       // 展示名：显式给了就用，否则退回 id。绝不用 effortLevel 推断名字。
       name: name ?? trimmed,
       contextWindow: contextWindow ?? perModel?.contextWindow ?? 0,
-      reasoning:
-        reasoningHint ??
-        perModel?.supportsReasoning ??
-        perModel?.effortLevel !== undefined,
+      reasoning,
     });
   };
 
@@ -121,8 +122,38 @@ export async function listModels(currentModel?: string | null): Promise<Composer
 /** 某个模型的推理强度，没有配置则 null。 */
 export async function effortLevelFor(model: string): Promise<string | null> {
   const settings = await readSettings();
-  const level = settings.modelSettings?.[model]?.effortLevel;
+  const cleanId = model.replace(/\[.*?\]$/, "");
+  const level =
+    settings.modelSettings?.[model]?.effortLevel ??
+    settings.modelSettings?.[cleanId]?.effortLevel;
   return typeof level === "string" ? level : null;
+}
+
+/** 保存某个模型的推理强度到 settings.json，与 VS Code 插件行为对齐。 */
+export async function saveEffortLevel(model: string, level: string): Promise<void> {
+  const p = settingsPath();
+  try {
+    const raw = await readFile(p, "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return;
+    if (!parsed.modelSettings || typeof parsed.modelSettings !== "object") {
+      parsed.modelSettings = {};
+    }
+    const cleanId = model.replace(/\[.*?\]$/, "");
+    if (!parsed.modelSettings[cleanId] || typeof parsed.modelSettings[cleanId] !== "object") {
+      parsed.modelSettings[cleanId] = {};
+    }
+    parsed.modelSettings[cleanId].effortLevel = level;
+    if (model !== cleanId) {
+      if (!parsed.modelSettings[model] || typeof parsed.modelSettings[model] !== "object") {
+        parsed.modelSettings[model] = {};
+      }
+      parsed.modelSettings[model].effortLevel = level;
+    }
+    await writeFile(p, JSON.stringify(parsed, null, 2) + "\n", "utf8");
+  } catch {
+    // 忽略写入失败，避免影响运行时响应
+  }
 }
 
 /**

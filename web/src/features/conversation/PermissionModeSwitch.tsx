@@ -41,8 +41,10 @@ interface ModeMeta {
 
 export const PERMISSION_MODE_META: Record<PermissionMode, ModeMeta> = {
   default: {
-    label: "默认（Manual）",
-    hint: "危险操作会停下来问你",
+    // 触发器上只放「默认」两个字：`默认（Manual）` 在窄工具栏里会被省略号吃掉，
+    // 看起来就像一个坏掉的模式名。Manual 是他们 CLI 里的别名，放进 hint 里说。
+    label: "默认",
+    hint: "危险操作会停下来问你（CLI 里也叫 Manual）",
     risk: null,
   },
   acceptEdits: {
@@ -84,9 +86,10 @@ export interface PermissionModeSwitchProps {
 /**
  * 权限模式切换。
  *
- * **这是本项目在权限这块能提供的最实在的东西。** 实测 Claude Code CLI 2.1.309 不把
- * 权限提问交给外部进程（见 PROJECT_RULES.md 5.5），所以我们没法弹「允许/拒绝」卡片；
- * 我们能做的是让用户**一眼看清自己现在在哪个模式**，并且切到危险模式时拦住一次。
+ * 模式决定**哪些工具会走到提问那一步**：`default` 下危险操作会停下来问，
+ * `dontAsk` 下未预授权的一律拒绝，`bypassPermissions` 下全部直接执行。所以这个
+ * 开关不是装饰 —— 它和 `PermissionRequestCard`（见 PROJECT_RULES.md 5.5）是同一套
+ * 权限模型的两端：一个决定「问不问」，一个负责「问到了怎么答」。
  *
  * 两条硬约束体现在代码里：
  * - `bypassPermissions` 需要二次确认，确认文案会说明后果（不是「确定吗？」这种废话）。

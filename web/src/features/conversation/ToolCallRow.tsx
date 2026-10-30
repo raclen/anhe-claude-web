@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Glyph, type GlyphName } from "../../components/dsh-icons.tsx";
 import { StateDot } from "../../components/StateDot.tsx";
 import type { ContentBlock, TextBlock, ToolCallBlock } from "../../lib/types.ts";
 import { DisclosureRow } from "./DisclosureRow.tsx";
 import { ImageThumb } from "../../components/ImageLightbox.tsx";
 import { imageBlocksOf } from "../../lib/image-attachments.ts";
-import { classify, deriveSummary, shortenPath, variantTitles, type Variant } from "./row-model.ts";
+import { classify, deriveSummary, shortenPath, type Variant } from "./row-model.ts";
+import { parseMcpToolName, toolRowTitle } from "./tool-map.ts";
 import type { ToolExecution } from "./useConversation.ts";
 import styles from "./ToolCallRow.module.css";
 import { useT } from "../../lib/app-state.ts";
@@ -60,14 +61,22 @@ export function ToolCallRow({
   execution,
   cwd,
   home,
+  defaultOpen = false,
 }: {
   call: ToolCallBlock;
   execution: ToolExecution | undefined;
   cwd?: string | undefined;
   home?: string | undefined;
+  /** Whether the I/O card starts open; the 「完全展开」档 asks for it. */
+  defaultOpen?: boolean;
 }) {
   const t = useT();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
+  // 档位给的初值，之后由用户点击接管；档位一变就按新档位重新摆正，
+  // 否则已经点开过的行会一直开着，让「详细」看起来和「完全展开」一样。
+  useEffect(() => {
+    setOpen(defaultOpen);
+  }, [defaultOpen]);
   const variant = classify(call.name);
   const state = execution?.isError ? "error" : execution?.running ? "running" : "ok";
   const running = execution?.running ?? false;
@@ -78,11 +87,24 @@ export function ToolCallRow({
   const images = imageBlocksOf(execution?.result ?? []);
   const input = useMemo(() => inputText(variant, call), [variant, call]);
   const showInput = input.length > 0 || running;
+  // Bash 的摘要优先取 `description`（自然语言，比如「查看构建配置」），只有没有
+  // description 时才是命令本身。等宽字体只对后者有意义 —— 中文描述用等宽反而难读。
+  const args = call.arguments ?? execution?.args;
+  const summaryIsCommand =
+    variant === "bash" && typeof args?.command === "string" && typeof args?.description !== "string";
 
-  // dsh falls back to a generic "工具调用" title for tools it does not know.
-  // pi's own tool names carry more than that, so an unrecognised tool is titled
-  // by its own name instead.
-  const title = variant === "others" ? call.name : variantTitles(t)[variant];
+  // 标题用**真实工具名**（`Bash` / `Edit` / `Read`），不再按 variant 翻成
+  // 「命令 / 编辑 / 读取」：一段转录里常混着几个不同工具，中文 variant 词会让
+  // 它们看起来是同一件事。MCP 工具（`mcp__chrome-devtools__click`）的名字里本来
+  // 就同时带着 server 和工具，两段都要露出来，否则「chrome-devtools」整个消失。
+  const mcp = parseMcpToolName(call.name);
+  const { label: rawLabel, server } = toolRowTitle(call.name);
+  // 历史转录里存在工具名为空的块（CLI 没能解析出 tool_use 的 name，参数只剩
+  // `__unparsedToolInput`）。标题空着只剩一个图标，看起来像渲染坏了，所以退回
+  // 通用文案 —— 展开后的输入区仍然把原始内容摊给用户看。
+  const toolLabel = rawLabel === "" ? t("tool.others") : rawLabel;
+  // MCP 工具没有自己的 variant 图标（会被归到 search），换个通用的插件图标更贴切。
+  const glyph = mcp !== undefined ? "mcp" : VARIANT_GLYPHS[variant];
 
   return (
     <div className={styles.root} data-variant={variant} data-tool={call.name} data-state={state}>
@@ -93,10 +115,17 @@ export function ToolCallRow({
         leadingClassName={styles.leading}
         titleClassName={styles.title}
         // dsh swaps the glyph for a state dot when a call did not settle cleanly.
-        icon={
-          state === "error" ? <StateDot state="error" /> : <Glyph name={VARIANT_GLYPHS[variant]} />
+        icon={state === "error" ? <StateDot state="error" /> : <Glyph name={glyph} />}
+        title={
+          <span className={styles.titleInner}>
+            {server !== undefined ? (
+              <span className={styles.server} title={call.name}>
+                {server}
+              </span>
+            ) : null}
+            <span className={styles.toolName}>{toolLabel}</span>
+          </span>
         }
-        title={title}
         open={open}
         expandable
         expandOnRowClick
@@ -104,8 +133,14 @@ export function ToolCallRow({
         onToggle={() => setOpen((value) => !value)}
         collapsedContent={
           <>
-            <span className={styles.sep} aria-hidden />
-            <span className={styles.summary} data-error={execution?.isError || undefined}>
+            {/* 没有摘要的调用（`take_snapshot` 这种无参工具）不画分隔点：行尾挂一颗
+                孤零零的「·」看起来像渲染漏了东西。 */}
+            {summary !== "" ? <span className={styles.sep} aria-hidden /> : null}
+            <span
+              className={styles.summary}
+              data-mono={summaryIsCommand || undefined}
+              data-error={execution?.isError || undefined}
+            >
               {summary}
             </span>
           </>

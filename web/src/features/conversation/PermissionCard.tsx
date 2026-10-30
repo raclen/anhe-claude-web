@@ -3,15 +3,15 @@ import { useT } from "../../lib/app-state.ts";
 import styles from "./PermissionCard.module.css";
 
 /**
- * 工具调用被拒绝时的那张卡片。
+ * 工具调用被**拒绝之后**的那张说明卡。
  *
- * **先说清这张卡不是什么。** 它不是一个「允许 / 拒绝」按钮——本项目没有能力弹那种卡。
- * 实测 Claude Code CLI 2.1.309 不把权限提问交给外部进程（`--permission-prompts host`
- * 只会得到一条 `system:permission_denied`；`--sdk-url` 被拒）。
+ * 别和 `PermissionRequestCard` 搞混：那张是**正在发生的提问**（三个按钮，
+ * 由 `--permission-prompt-tool` 的内置 MCP 中继送来），这张是**已经发生的事实**。
+ * 走到这里的典型情况是 CLI 自己按 `settings.json` 的规则直接拒了、或者用户在中继
+ * 里点了拒绝 —— 那时没有按钮可点，能做的只有把原始原因摆清楚。
  *
- * 那它是什么：**一条如实的拒绝说明**。CLI 拦下了某个工具，我们把它的原始原因
- * 完整摆出来，并告诉用户三条可走的路。含糊其辞（「操作已取消」）会让用户以为
- * 程序坏了；把原因摊开，用户才知道要么去终端批、要么换模式、要么改命令。
+ * 含糊其辞（「操作已取消」）会让用户以为程序坏了；把原因摊开，用户才知道要么换
+ * 模式、要么改规则、要么换命令。
  */
 export interface PermissionDeniedProps {
   /** 被拒的工具名。 */

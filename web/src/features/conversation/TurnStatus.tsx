@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useT } from "../../lib/app-state.ts";
-import { PI_MARK_URL } from "../../lib/brand.ts";
+import { BRAND_MARK_URL } from "../../lib/brand.ts";
 import { formatRunDuration } from "../../lib/duration.ts";
 import styles from "./TurnStatus.module.css";
 
@@ -22,13 +22,13 @@ import styles from "./TurnStatus.module.css";
  *   so it costs no layout and keeps the line-height of ordinary text.
  */
 /**
- * pi's own mark — the same artwork the sidebar brand and the desktop icon
- * draw — in the running row's icon box. dsh puts its whale tail here; this is
- * whose agent is working. The bitmap is square, so the radius below keeps it a
- * tile at this size instead of a stamp.
+ * The app's own mark — the same artwork the sidebar brand, the tab icon and the
+ * installed window icon draw — in the running row's icon box. dsh puts its
+ * whale tail here; this is whose agent is working. The tile is square, so the
+ * radius below keeps it a tile at this size instead of a stamp.
  */
-function PiMark() {
-  return <img className={styles.mark} src={PI_MARK_URL} alt="" draggable={false} />;
+function BrandMark() {
+  return <img className={styles.mark} src={BRAND_MARK_URL} alt="" draggable={false} />;
 }
 
 export function TurnStatus({ startTime }: { startTime?: number | undefined }) {
@@ -52,7 +52,7 @@ export function TurnStatus({ startTime }: { startTime?: number | undefined }) {
           the work so far and the clock still counting (its `runningDivider`). */}
       <span className={styles.divider} aria-hidden />
       <span className={styles.content}>
-        <PiMark />
+        <BrandMark />
         <span className={styles.status}>{t("turn.working")}</span>
         {showClock ? (
           // Announced state is the shimmer text; a ticking number would make

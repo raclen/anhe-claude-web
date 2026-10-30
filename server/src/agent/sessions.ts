@@ -7,7 +7,13 @@ import { SESSION_DIR_OVERRIDE, TITLE_FALLBACK_WORDS, TITLE_MAX_BYTES } from "../
 import { getSessionOverrides } from "../projects.ts";
 import { clipPreview, clipTitle, fallbackTitle } from "../title-text.ts";
 
-export type TitleSource = "summary" | "firstMessage" | "lastPrompt" | "fallback";
+export type TitleSource =
+  | "customTitle"
+  | "aiTitle"
+  | "summary"
+  | "firstMessage"
+  | "lastPrompt"
+  | "fallback";
 
 export interface SessionView {
   /** 会话 jsonl 的绝对路径。也是会话的身份。 */
@@ -25,6 +31,7 @@ export interface SessionView {
   /** 是否含子代理（`isSidechain: true`）条目。 */
   hasSidechain: boolean;
   hidden: boolean;
+  gitBranch?: string;
 }
 
 const PREVIEW_MAX_CHARACTERS = 200;
@@ -51,6 +58,9 @@ interface ParsedLine {
   text?: string;
   summary?: string;
   lastPrompt?: string;
+  aiTitle?: string;
+  customTitle?: string;
+  gitBranch?: string;
 }
 
 function textFromContent(content: unknown): string {
@@ -77,9 +87,16 @@ function stripInjectedContext(text: string): string {
   return text
     .replace(/<ide_selection>[\s\S]*?<\/ide_selection>/g, " ")
     .replace(/<ide_opened_file>[\s\S]*?<\/ide_opened_file>/g, " ")
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, " ")
     .replace(/<command-name>[\s\S]*?<\/command-name>/g, " ")
+    .replace(/<command-message>[\s\S]*?<\/command-message>/g, " ")
+    .replace(/<command-args>[\s\S]*?<\/command-args>/g, " ")
+    .replace(/<command>[\s\S]*?<\/command>/g, " ")
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, " ")
+    .replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>/g, " ")
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, " ")
+    .replace(/<system-err>[\s\S]*?<\/system-err>/g, " ")
+    .replace(/<system-out>[\s\S]*?<\/system-out>/g, " ")
     .trim();
 }
 
@@ -97,6 +114,9 @@ async function parseFile(path: string): Promise<{
   firstUserText: string;
   lastPrompt: string;
   summary: string;
+  aiTitle: string;
+  customTitle: string;
+  gitBranch: string;
   messageCount: number;
   hasSidechain: boolean;
   created: string | null;
@@ -108,6 +128,9 @@ async function parseFile(path: string): Promise<{
     firstUserText: "",
     lastPrompt: "",
     summary: "",
+    aiTitle: "",
+    customTitle: "",
+    gitBranch: "",
     messageCount: 0,
     hasSidechain: false,
     created: null as string | null,
@@ -137,6 +160,15 @@ async function parseFile(path: string): Promise<{
         result.id = raw.sessionId;
       }
       if (raw.isSidechain === true) result.hasSidechain = true;
+      if (typeof raw.gitBranch === "string" && raw.gitBranch.length > 0 && result.gitBranch.length === 0) {
+        result.gitBranch = raw.gitBranch;
+      }
+      if (typeof raw.aiTitle === "string" && raw.aiTitle.trim().length > 0) {
+        result.aiTitle = raw.aiTitle.trim();
+      }
+      if (typeof raw.customTitle === "string" && raw.customTitle.trim().length > 0) {
+        result.customTitle = raw.customTitle.trim();
+      }
 
       if (typeof raw.timestamp === "string") {
         if (result.created === null) result.created = raw.timestamp;
@@ -144,6 +176,16 @@ async function parseFile(path: string): Promise<{
       }
 
       switch (raw.type) {
+        case "ai-title":
+          if (typeof raw.aiTitle === "string" && raw.aiTitle.trim().length > 0) {
+            result.aiTitle = raw.aiTitle.trim();
+          }
+          break;
+        case "custom-title":
+          if (typeof raw.customTitle === "string" && raw.customTitle.trim().length > 0) {
+            result.customTitle = raw.customTitle.trim();
+          }
+          break;
         case "summary":
           if (typeof raw.summary === "string" && result.summary.length === 0) {
             result.summary = raw.summary;
@@ -186,13 +228,33 @@ async function parseFile(path: string): Promise<{
   return result;
 }
 
-/** 标题优先级：summary → 首条 user 消息 → last-prompt → 兜底。 */
+/**
+ * 标题优先级（与 Claude Code VS Code 扩展规范完全对齐）：
+ * customTitle (用户重命名) → aiTitle (AI 智能生成标题) → lastPrompt (最新提问) → summary → 首条 user 消息 → 兜底。
+ */
 function deriveTitle(parsed: {
   id: string;
   firstUserText: string;
   lastPrompt: string;
   summary: string;
+  aiTitle?: string;
+  customTitle?: string;
 }): { title: string; titleSource: TitleSource } {
+  const custom = parsed.customTitle?.trim() ?? "";
+  if (custom.length > 0) {
+    return { title: clipTitle(custom, TITLE_MAX_BYTES), titleSource: "customTitle" };
+  }
+  const ai = parsed.aiTitle?.trim() ?? "";
+  if (ai.length > 0) {
+    return { title: clipTitle(ai, TITLE_MAX_BYTES), titleSource: "aiTitle" };
+  }
+  const last = fallbackTitle(
+    foldSkillCommand(stripInjectedContext(parsed.lastPrompt)),
+    TITLE_FALLBACK_WORDS,
+    TITLE_MAX_BYTES,
+  );
+  if (last) return { title: last, titleSource: "lastPrompt" };
+
   const summary = parsed.summary.trim();
   if (summary.length > 0) {
     return { title: clipTitle(summary, TITLE_MAX_BYTES), titleSource: "summary" };
@@ -203,13 +265,6 @@ function deriveTitle(parsed: {
     TITLE_MAX_BYTES,
   );
   if (first) return { title: first, titleSource: "firstMessage" };
-
-  const last = fallbackTitle(
-    foldSkillCommand(stripInjectedContext(parsed.lastPrompt)),
-    TITLE_FALLBACK_WORDS,
-    TITLE_MAX_BYTES,
-  );
-  if (last) return { title: last, titleSource: "lastPrompt" };
 
   return { title: `Session ${parsed.id.slice(0, 8)}`, titleSource: "fallback" };
 }
@@ -224,7 +279,7 @@ const viewCache = new Map<string, CacheEntry>();
 /** 一个 jsonl 文件 → 一个会话视图。 */
 async function readSessionView(
   path: string,
-  override: { hidden?: boolean } | undefined,
+  override: { name?: string; hidden?: boolean } | undefined,
 ): Promise<SessionView | null> {
   let info;
   try {
@@ -232,13 +287,16 @@ async function readSessionView(
   } catch {
     return null;
   }
-  const signature = `${info.size}|${info.mtimeMs}`;
+  const signature = `${info.size}|${info.mtimeMs}|${override?.name ?? ""}|${override?.hidden ?? ""}`;
   const cached = viewCache.get(path);
   if (cached !== undefined && cached.signature === signature) {
-    return { ...cached.view, hidden: override?.hidden === true };
+    return cached.view;
   }
 
   const parsed = await parseFile(path);
+  if (override?.name && override.name.trim().length > 0) {
+    parsed.customTitle = override.name.trim();
+  }
   const { title, titleSource } = deriveTitle(parsed);
   const id =
     parsed.id.length > 0 ? parsed.id : (path.split(/[/\\]/).pop() ?? "").replace(/\.jsonl$/, "");
@@ -258,6 +316,7 @@ async function readSessionView(
     messageCount: parsed.messageCount,
     hasSidechain: parsed.hasSidechain,
     hidden: override?.hidden === true,
+    gitBranch: parsed.gitBranch.length > 0 ? parsed.gitBranch : undefined,
   };
   viewCache.set(path, { signature, view });
   return view;

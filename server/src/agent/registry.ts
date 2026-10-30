@@ -1,14 +1,25 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import {
   IDLE_TIMEOUT_MS,
   MAX_ACTIVE_SESSIONS,
+  PERMISSION_RELAY_TIMEOUT_MS,
+  PORT,
   SESSION_DIR_OVERRIDE,
 } from "../config.ts";
 import {
+  PERMISSION_PROMPT_TOOL,
+  removeMcpConfig,
+  writeMcpConfig,
+  type AskArguments,
+} from "../permission-relay.ts";
+import {
   asCanUseToolRequest,
+  contextUsageFromResponse,
+  getContextUsageCommand,
   decideAllowOnce,
   decideAlwaysAllow,
   decideDeny,
@@ -17,17 +28,22 @@ import {
   interruptCommand,
   isControlRequest,
   isPermissionMode,
+  setMaxThinkingTokensCommand,
   setModelCommand,
   setPermissionModeCommand,
   successResponse,
+  thinkingTokensForLevel,
   type CanUseToolResponse,
   type PermissionMode,
   type PermissionUpdate,
 } from "./controls.ts";
+import { effortLevelFor } from "./models.ts";
+import { rememberSessionWindow } from "../store.ts";
 import { makeDraftPath } from "../session-path.ts";
 import { readSessionSnapshot as readSnapshot } from "../session-reader.ts";
 import { writeTranscriptHtml } from "../transcript-html.ts";
 import { locateClaudeCli, type ClaudeCli } from "./locate.ts";
+import type { AgentMessage, AssistantMessage, ComposerContext, ContentBlock } from "./types.ts";
 
 /**
  * fork 新会话时必须发出的第一句话。
@@ -88,6 +104,17 @@ export interface SessionHandle {
   permissionMode: PermissionMode;
   /** 正在等待用户决定的权限请求，按 requestId 索引。 */
   pending: Map<string, PendingPermission>;
+  /**
+   * 权限中继：`requestId` → 等待用户决定的裁决回调。
+   *
+   * 与 `pending` 的区别在于**谁在等**：`pending` 是给界面看的账本（刷新后恢复卡片），
+   * 这里挂的是那条 MCP `tools/call` 的 resolve —— 不调用它，那一轮就永远卡着。
+   */
+  askWaiters: Map<string, (body: Record<string, unknown>) => void>;
+  /** 本次 spawn 的中继地址；cli 通过它把 `ask` 调用送回来。 */
+  relayId: string;
+  /** 中继的临时 MCP 配置文件路径；会话收尾时删掉。 */
+  mcpConfigPath: string | null;
   /** 已发出但没等到 `control_response` 的请求 id。 */
   controlWaiters: Map<string, (payload: Record<string, unknown>) => void>;
   /** 本轮是否还在进行（用于中断与前端状态）。 */
@@ -96,12 +123,28 @@ export interface SessionHandle {
   resumeId: string | null;
   /** `system:init.model` 报的模型。运行中会话的权威模型来源。 */
   initModel: string | null;
-  /** 最近一轮的上下文 token 数（来自 `assistant.message.usage`）。 */
+  /** 最近一轮的上下文 token 数（来自归一化后的 assistant usage）。 */
   lastUsage: number | null;
   /** `system:init.slash_commands`。进程启动前为 null。 */
   slashCommands: string[] | null;
   /** 已失效的句柄。routes 见到它就重开。 */
   dead: boolean;
+  /** 会话还未落盘（第一轮未结束）时发出的用户消息，让 `getMessages` 在文件写出前也能返回首条。 */
+  unflushedMessages: AgentMessage[];
+  /** 思考强度设置（auto, off, low, medium, high, xhigh, max）。 */
+  thinkingLevel?: string;
+  /** 是否正在等待中断生效；再次收到中断请求时会立刻升级为强杀进程。 */
+  abortInFlight?: boolean;
+  /** 中断超时定时器：超期未 settle 则强制 kill 子进程，防止悬挂。 */
+  abortTimer?: NodeJS.Timeout;
+  /**
+   * 这个进程是「预热出来的空进程」，还没被任何一次新建会话认领。
+   *
+   * 只认 `initialized === false` 不够：认领之后到第一条 prompt 之间，句柄仍然既
+   * 没 init 也没 streaming，于是第二次「新建会话」会把它再认领一遍 —— 两个新会话
+   * 共用一个进程，第二条消息就写进了第一个新会话里。认领时清掉这个标记。
+   */
+  spare: boolean;
   /**
    * 与 pi-web 的 `RpcClient` 同形的门面。
    *
@@ -120,9 +163,12 @@ export interface SessionClient {
   getMessages(): Promise<unknown[]>;
   getForkMessages(): Promise<unknown[]>;
   fork(entryId: string): Promise<{ text: string; cancelled: boolean }>;
+  getContextUsage(): Promise<ComposerContext | null>;
   getState(): Promise<{
     model: { provider: string; id: string } | null;
     thinkingLevel: string;
+    /** 会话级权限模式。前端拿它当模式按钮的权威值。 */
+    permissionMode: PermissionMode;
     isStreaming: boolean;
     isCompacting: boolean;
     sessionFile: string | null;
@@ -133,6 +179,7 @@ export interface SessionClient {
     autoCompactionEnabled: boolean;
   }>;
   setModel(provider: string, id: string): Promise<void>;
+  setThinkingLevel(level: string): Promise<void>;
   setAutoCompaction(enabled: boolean): Promise<void>;
   setSessionName(name: string): Promise<void>;
   /** `/compact [说明]`。走 CLI 自己的压缩命令。 */
@@ -211,6 +258,7 @@ export class SessionRegistry {
   private readonly aliases = new Map<string, string>();
   private readonly eventListeners = new Set<SessionEventListener>();
   private readonly idleTimers = new Map<string, NodeJS.Timeout>();
+  private readonly contextRequests = new WeakMap<SessionHandle, Promise<ComposerContext | null>>();
   private readonly idleTimeoutMs: number;
   private readonly maxActiveSessions: number;
   private readonly settingsPath: string | null;
@@ -218,8 +266,14 @@ export class SessionRegistry {
   constructor(options: SessionRegistryOptions = {}) {
     this.idleTimeoutMs = options.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
     this.maxActiveSessions = options.maxActiveSessions ?? MAX_ACTIVE_SESSIONS;
-    this.settingsPath =
+    // 必须在这里就转成绝对路径：CLI 的 `--settings` 是相对会话 cwd（项目目录）解析的，
+    // 而这里的相对路径是相对服务进程的启动目录，两边不一致会导致「Settings file not found」。
+    const rawSettingsPath =
       options.settingsPath ?? process.env.ANHE_CLAUDE_WEB_SETTINGS ?? null;
+    this.settingsPath =
+      rawSettingsPath !== null && rawSettingsPath.length > 0
+        ? resolve(rawSettingsPath)
+        : null;
   }
 
   onEvent(listener: SessionEventListener): () => void {
@@ -229,7 +283,10 @@ export class SessionRegistry {
 
   /** 会话路径 → 句柄。未启动则 undefined。 */
   get(sessionPath: string): SessionHandle | undefined {
-    return this.sessions.get(sessionPath);
+    const direct = this.sessions.get(sessionPath);
+    if (direct !== undefined) return direct;
+    const target = this.aliases.get(sessionPath);
+    return target !== undefined ? this.sessions.get(target) : undefined;
   }
 
   /**
@@ -247,9 +304,14 @@ export class SessionRegistry {
     return [...new Set(this.sessions.values())];
   }
 
-  /** 某个会话当前挂着的权限请求（用于刷新后恢复权限卡）。 */
+  /**
+   * 某个会话当前挂着的权限请求（用于刷新后恢复权限卡）。
+   *
+   * 必须走 `get()` 而不是 `this.sessions.get()`：`system:init` 之后句柄会从
+   * `draft:<项目>` 迁到真实 jsonl 路径，前端手里可能还是旧键。
+   */
   pendingPermissions(sessionPath: string): PendingPermission[] {
-    const handle = this.sessions.get(sessionPath);
+    const handle = this.get(sessionPath);
     return handle === undefined ? [] : [...handle.pending.values()];
   }
 
@@ -260,7 +322,30 @@ export class SessionRegistry {
    * 自己生成一个。所以在 init 到达之前，句柄用 `projectPath` 作为临时键，
    * 拿到 id 后再迁到真正的 `sessionPath`。
    */
-  async create(projectPath: string, options: { prompt?: string; permissionMode?: PermissionMode } = {}): Promise<SessionHandle> {
+  async create(
+    projectPath: string,
+    options: {
+      prompt?: string;
+      permissionMode?: PermissionMode;
+      thinkingLevel?: string;
+      /**
+       * 调用方指定的临时键。
+       *
+       * 前端手里已经有一个 draft 键时（页面刷新后回到一条还没落盘的新会话、
+       * 或那个进程被空闲回收后重开），必须沿用同一个键：事件是按 `sessionPath`
+       * 过滤下发的，换了键前端就一条都收不到。
+       */
+      draftKey?: string;
+      /**
+       * 起一个「还没有主人」的空进程，留给下一次新建会话认领。
+       *
+       * 只有 `prewarm` 传 true。直接为用户新建的会话必须传 false —— 否则它会在
+       * 第一条消息到达之前被另一次「新建会话」当成预热认领走，两个新会话共用一个
+       * 进程（重演本 bug）。
+       */
+      spare?: boolean;
+    } = {},
+  ): Promise<SessionHandle> {
     if (this.activeCount() >= this.maxActiveSessions) {
       await this.evictOldest();
     }
@@ -270,13 +355,22 @@ export class SessionRegistry {
       projectPath: resolve(projectPath),
       sessionId: null,
       permissionMode: options.permissionMode ?? "default",
+      thinkingLevel: options.thinkingLevel,
     });
-    // **临时键用 `draft:<项目路径>`，不是裸项目路径。**
+    // **临时键用 `draft:<token>|<项目路径>`，不是裸项目路径。**
     // 前端在第一条消息之前就要订阅这个会话的 SSE（否则会漏掉 `session_init`），
-    // 而订阅是按 `sessionPath` 过滤的 —— 用裸项目路径当键会和「会话路径」混淆：
-    // 同一个项目开两个会话，两次都会撞上同一个键。
+    // 而订阅是按 `sessionPath` 过滤的。键必须**每个进程一个**：只用项目路径的话，
+    // 同一项目开第二个会话会撞上第一个的键，而第一个的键早就进了别名表 ——
+    // 于是新会话的消息会被路由到那个旧会话里（实测踩过：新会话的问题出现在
+    // 几十分钟前的对话里，前端却一直停在「正在准备会话」）。
     // `draft:` 前缀也是 `routes.ts` 里 `isDraftPath` 认的形状，两边一致。
-    this.track(handle, makeDraftPath(handle.projectPath), { provisional: true });
+    // 只有预热出来的进程可以被认领；用户亲手新建的会话从这一秒起就有主人了。
+    handle.spare = options.spare === true;
+    this.track(
+      handle,
+      options.draftKey ?? makeDraftPath(handle.projectPath, randomUUID()),
+      { provisional: true },
+    );
     // **不在这里等 `system:init`。** 实测：`-p` 模式下 CLI 要等到第一条 prompt
     // 才开始发 init，空等 15 秒只会让「新建会话」这个动作慢 15 秒。
     // 会话 id 在第一轮 `send()` 之后由 `onLine` 填入并迁移路径；
@@ -315,7 +409,8 @@ export class SessionRegistry {
    * 再发消息自动重开」的落点。
    */
   async resume(sessionPath: string, projectPath: string): Promise<SessionHandle> {
-    const existing = this.sessions.get(sessionPath);
+    // 同样要认别名：前端可能拿着 `draft:<项目>` 来续聊，而句柄已经迁到真实路径。
+    const existing = this.get(sessionPath);
     if (existing !== undefined) {
       this.touch(existing);
       return existing;
@@ -338,6 +433,8 @@ export class SessionRegistry {
     // 句柄的 sessionPath 已经是我们传进来的那个文件，id 也已知 —— 不缺信息。
     this.track(handle, sessionPath, { provisional: false });
     handle.initialized = true;
+    // 它承载着一个已有会话的历史，永远不是「等着被认领的空进程」。
+    handle.spare = false;
     return handle;
   }
 
@@ -360,6 +457,18 @@ export class SessionRegistry {
       });
     }
     handle.streaming = true;
+    const blocks: ContentBlock[] = [];
+    if (text.trim().length > 0) blocks.push({ type: "text", text });
+    for (const img of images) {
+      blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
+    }
+    const userMessage: AgentMessage = {
+      role: "user",
+      content: blocks.length === 1 && blocks[0].type === "text" ? text : blocks,
+      timestamp: Date.now(),
+    };
+    handle.unflushedMessages.push(userMessage);
+
     // 前端要立刻知道本轮开始了（用来锁输入框、开计时器），不能等 CLI 的第一个事件。
     // 只在这里发：Normalizer 不再发 `agent_start`，否则一次发送会出现两条。
     handle.normalizer.markStreamStarted();
@@ -373,16 +482,77 @@ export class SessionRegistry {
 
   /** 中断当前轮。 */
   interrupt(sessionPath: string): boolean {
-    const handle = this.sessions.get(sessionPath);
+    const handle = this.get(sessionPath);
     if (handle === undefined) return false;
-    this.writeLine(handle, interruptCommand());
-    this.touch(handle);
+    this.abortHandle(handle);
     return true;
+  }
+
+  /**
+   * 中断会话。
+   *
+   * 先通过 stdin 发送 interrupt 控制命令；
+   * 如果进程未在超时时间（2.5s）内收尾（例如被远端死连接或阻塞挂起），
+   * 或者用户在等待期间再次点击中断，则立刻升级为 kill 子进程，
+   * 确保前端界面不会永久卡在转圈/重试状态。
+   */
+  abortHandle(handle: SessionHandle): void {
+    if (!handle.streaming) {
+      this.emit(handle, { type: "agent_settled", reason: "aborted" });
+      if (handle.abortTimer !== undefined) {
+        clearTimeout(handle.abortTimer);
+        handle.abortTimer = undefined;
+      }
+      handle.abortInFlight = false;
+      return;
+    }
+
+    if (handle.abortInFlight) {
+      if (handle.abortTimer !== undefined) {
+        clearTimeout(handle.abortTimer);
+        handle.abortTimer = undefined;
+      }
+      handle.abortInFlight = false;
+      try {
+        if (!handle.child.killed) handle.child.kill();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    handle.abortInFlight = true;
+    try {
+      this.writeLine(handle, interruptCommand());
+    } catch {
+      try {
+        if (!handle.child.killed) handle.child.kill();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    this.touch(handle);
+
+    if (handle.abortTimer !== undefined) clearTimeout(handle.abortTimer);
+    handle.abortTimer = setTimeout(() => {
+      handle.abortTimer = undefined;
+      if (!handle.abortInFlight) return;
+      handle.abortInFlight = false;
+      if (handle.streaming || !handle.child.killed) {
+        try {
+          if (!handle.child.killed) handle.child.kill();
+        } catch {
+          // ignore
+        }
+      }
+    }, 2500);
+    handle.abortTimer.unref?.();
   }
 
   /** 切换权限模式。会话级状态，新会话永远从 default 开始。 */
   setPermissionMode(sessionPath: string, mode: PermissionMode): boolean {
-    const handle = this.sessions.get(sessionPath);
+    const handle = this.get(sessionPath);
     if (handle === undefined) return false;
     this.writeLine(handle, setPermissionModeCommand(mode));
     handle.permissionMode = mode;
@@ -392,11 +562,102 @@ export class SessionRegistry {
 
   /** 切换模型。 */
   setModel(sessionPath: string, model: string): boolean {
-    const handle = this.sessions.get(sessionPath);
+    const handle = this.get(sessionPath);
     if (handle === undefined) return false;
     this.writeLine(handle, setModelCommand(model));
     this.touch(handle);
     return true;
+  }
+
+  /** 切换思考强度。 */
+  setThinkingLevel(sessionPath: string, level: string): boolean {
+    const handle = this.get(sessionPath);
+    if (handle === undefined) return false;
+    const tokens = thinkingTokensForLevel(level);
+    this.writeLine(handle, setMaxThinkingTokensCommand(tokens));
+    handle.thinkingLevel = level;
+    this.touch(handle);
+    return true;
+  }
+
+  /**
+   * 中继送来的一次权限提问：挂起那一轮，等用户在界面上做决定。
+   *
+   * 这是权限卡的运行入口。与旧的控制平面路径（`onLine` 里的 `can_use_tool`）
+   * 的区别在于**等待方式**：CLI 现在是在等一个 MCP 工具的返回值，所以我们
+   * 返回的 Promise 决定那一轮是继续还是停下。
+   *
+   * 入参**原样**写进 `input`，不裁剪 —— SECURITY.md 硬边界 3。
+   */
+  askByRelay(relayId: string, args: AskArguments): Promise<Record<string, unknown>> {
+    const handle = this.findByRelay(relayId);
+    if (handle === undefined) {
+      return Promise.resolve({
+        behavior: "deny",
+        message: "这次权限请求没有找到对应的会话，已拒绝。",
+        decisionClassification: "user_reject",
+      });
+    }
+
+    const requestId = randomUUID();
+    const toolUseId = args.toolUseId;
+    handle.pending.set(requestId, {
+      requestId,
+      toolName: args.toolName,
+      displayName: args.toolName,
+      input: args.input,
+      toolUseId,
+      description: args.description,
+      blockedPath: args.blockedPath,
+      toolKind: null,
+      requiresUserInteraction: false,
+      requestedAt: Date.now(),
+      suggestions: args.suggestions,
+    });
+    this.emit(
+      handle,
+      handle.normalizer.permissionRequest(requestId, {
+        tool_name: args.toolName,
+        input: args.input,
+        tool_use_id: toolUseId,
+        ...(args.description === null ? {} : { description: args.description }),
+        ...(args.blockedPath === null ? {} : { blocked_path: args.blockedPath }),
+        ...(args.suggestions === undefined ? {} : { permission_suggestions: args.suggestions }),
+      }),
+    );
+    // 卡片挂着的时候不能被空闲回收掉 —— 用户可能正看着它。
+    this.touch(handle);
+
+    return new Promise<Record<string, unknown>>((resolve) => {
+      let settled = false;
+      const finish = (body: Record<string, unknown>): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        handle.askWaiters.delete(requestId);
+        resolve(body);
+      };
+      const timer = setTimeout(() => {
+        handle.pending.delete(requestId);
+        this.emit(handle, { type: "permission_resolved", requestId, behavior: "deny" });
+        finish({
+          behavior: "deny",
+          message: "等这个权限决定等太久了，这次调用已自动拒绝。",
+          decisionClassification: "user_reject",
+        });
+      }, PERMISSION_RELAY_TIMEOUT_MS);
+      timer.unref?.();
+      handle.askWaiters.set(requestId, finish);
+    });
+  }
+
+  /** 把中继 id 找回到活着的句柄。 */
+  private findByRelay(relayId: string): SessionHandle | undefined {
+    if (relayId.length === 0) return undefined;
+    for (const handle of new Set(this.sessions.values())) {
+      if (handle.relayId === relayId) return handle;
+    }
+    return undefined;
   }
 
   /**
@@ -404,13 +665,17 @@ export class SessionRegistry {
    *
    * 三个按钮的语义差异全在 `controls.ts` 里，这里只负责把响应包好写回去。
    * 响应必须是 `control_response` 信封 + 嵌套 `response`，写错过一次。
+   *
+   * **两条路径都要喂到**：控制平面（老的 `can_use_tool`）与 MCP 中继（现在这条路）。
+   * 中继挂着的那条 Promise 不唤醒，那一轮就永远停在那里。
    */
   answerPermission(
     sessionPath: string,
     requestId: string,
     answer: PermissionAnswer,
   ): boolean {
-    const handle = this.sessions.get(sessionPath);
+    // 同 `pendingPermissions`：前端可能还拿着 draft 键。
+    const handle = this.get(sessionPath);
     if (handle === undefined) return false;
     const pending = handle.pending.get(requestId);
     if (pending === undefined) return false;
@@ -436,6 +701,17 @@ export class SessionRegistry {
       response = decideDeny({ message: answer.message, interrupt: answer.interrupt });
     }
 
+    // MCP 中继那条路：唤醒挂着的那次 `ask`，这就是裁决本身。
+    const waiter = handle.askWaiters.get(requestId);
+    if (waiter !== undefined) {
+      handle.pending.delete(requestId);
+      handle.askWaiters.delete(requestId);
+      this.emit(handle, handle.normalizer.permissionResolved(requestId, answer.behavior));
+      this.touch(handle);
+      waiter(response as unknown as Record<string, unknown>);
+      return true;
+    }
+
     this.writeLine(handle, successResponse(requestId, response));
     handle.pending.delete(requestId);
     this.emit(handle, handle.normalizer.permissionResolved(requestId, answer.behavior));
@@ -445,7 +721,7 @@ export class SessionRegistry {
 
   /** 停掉一个会话进程。 */
   stop(sessionPath: string, reason = "stopped"): void {
-    const handle = this.sessions.get(sessionPath);
+    const handle = this.get(sessionPath);
     if (handle === undefined) return;
     this.dispose(handle, reason);
   }
@@ -486,10 +762,14 @@ export class SessionRegistry {
     projectPath: string;
     sessionId: string | null;
     permissionMode: PermissionMode;
+    thinkingLevel?: string;
   }): Promise<SessionHandle> {
     if (!existsSync(input.projectPath)) {
       throw new SessionRegistryError("spawn-failed", `项目目录不存在：${input.projectPath}`);
     }
+
+    const relayId = randomUUID();
+    const mcpConfigPath = writeMcpConfig(relayId, PORT);
 
     const args = [
       "-p",
@@ -499,17 +779,25 @@ export class SessionRegistry {
       "stream-json",
       "--include-partial-messages",
       "--verbose",
-      // 注意：不要加 `--permission-prompts host`。
-      // 实测（FINDINGS.md 第 11 节）：`can_use_tool` 只对 Anthropic 认可的 SDK 宿主开放，
-      // 而 `--sdk-url` 会以 "host is not an approved Anthropic endpoint" 被拒。
-      // 所以这个版本的 CLI 无法把权限提问接到本进程 —— 权限一律由 CLI 自己按
-      // 用户 settings.json 的 permissions 规则判定，被拒时它发
-      // `system:permission_denied`，我们如实展示（见 normalize.ts）。
+      // 权限提问接到本进程：`ask` 由我们的 MCP 中继（`permission-relay.ts`）回答。
+      // 实测（PROJECT_RULES.md 第 11 节）：`--permission-prompt-tool` 接受
+      // `mcp__<服务器>__<工具>`；CLI 需要授权时调用这个工具，把返回的 JSON 文本
+      // 当作裁决。这是权限卡的**唯一**通路 —— 不走 SDK 宿主，也不碰
+      // `--dangerously-skip-permissions`（SECURITY.md 硬边界 2）。
+      "--permission-prompt-tool",
+      PERMISSION_PROMPT_TOOL,
+      // **不加 `--strict-mcp-config`**：那会把用户自己的 MCP 服务器全屏蔽掉。
+      // 这个文件只用来**追加**我们的中继，其余定义照旧从 `~/.claude.json` 读取。
+      "--mcp-config",
+      mcpConfigPath,
     ];
     if (input.sessionId !== null) args.push("--resume", input.sessionId);
     if (input.permissionMode !== "default") {
       args.push("--permission-mode", input.permissionMode);
     }
+    // 不通过全局命令行参数 --effort 强锁整个进程，避免对于不支持 effort 的模型（如 GLM-5.3-flash）
+    // 或第三方网关触发上游请求死锁。思考强度统一通过 control_request 的 set_max_thinking_tokens 动态控制。
+    // 与 VS Code 官方插件的设计保持一致。
     // 实测：settings.json 的 env 优先级高于进程环境变量，换上游只能靠 --settings。
     if (this.settingsPath !== null && this.settingsPath.length > 0) {
       args.push("--settings", this.settingsPath);
@@ -541,6 +829,9 @@ export class SessionRegistry {
       initialized: false,
       permissionMode: input.permissionMode,
       pending: new Map(),
+      askWaiters: new Map(),
+      relayId,
+      mcpConfigPath,
       controlWaiters: new Map(),
       streaming: false,
       resumeId: input.sessionId,
@@ -548,6 +839,11 @@ export class SessionRegistry {
       lastUsage: null,
       slashCommands: null,
       dead: false,
+      unflushedMessages: [],
+      thinkingLevel: input.thinkingLevel,
+      // 每个新起的进程都是空进程：预热出来的等认领，`create` 出来的由调用方
+      // 立刻认领。见 `claimPrewarmed`。
+      spare: true,
       client: null as unknown as SessionClient,
     };
 
@@ -661,6 +957,7 @@ export class SessionRegistry {
           // 从临时键迁到真键。句柄对象同一个，监听者按路径过滤。
           this.sessions.delete(previousPath);
           this.sessions.set(handle.sessionPath, handle);
+          this.aliases.set(previousPath, handle.sessionPath);
           // **必须广播改名。** 前端在拿到会话 id 之前订阅的是 `draft:<项目>`，
           // 它没有别的办法知道这个会话落到了哪个 jsonl 上 —— 不发这条，
           // 前端会一直停在 draft 路径上，后面每一条事件都收不到。
@@ -686,28 +983,28 @@ export class SessionRegistry {
       }
     }
 
-    // 记账上下文用量：每条 assistant 消息的 usage 是权威的窗口占用。
-    if (event.type === "assistant") {
-      const message = event.message as Record<string, unknown> | undefined;
-      const usage = message?.usage as Record<string, unknown> | undefined;
-      if (usage !== undefined) {
-        const count = (key: string): number =>
-          typeof usage[key] === "number" ? (usage[key] as number) : 0;
-        const total =
-          count("input_tokens") +
-          count("cache_read_input_tokens") +
-          count("cache_creation_input_tokens") +
-          count("output_tokens");
-        if (total > 0) handle.lastUsage = total;
-      }
-    }
-
     handle.lastActivityAt = Date.now();
     this.touch(handle);
 
     for (const normalized of handle.normalizer.push(event)) {
+      if (normalized.type === "message_end") {
+        const message = normalized.message as AssistantMessage;
+        const usage = message.usage;
+        if (usage !== undefined && message.stopReason !== "aborted" && message.stopReason !== "error" && !message.errorMessage) {
+          const total = usage.input + usage.cacheRead + usage.cacheWrite + usage.output;
+          if (Number.isFinite(total) && total > 0) handle.lastUsage = total;
+        }
+      }
       if (normalized.type === "agent_start") handle.streaming = true;
-      if (normalized.type === "agent_settled") handle.streaming = false;
+      if (normalized.type === "agent_settled") {
+        handle.streaming = false;
+        handle.unflushedMessages = [];
+        if (handle.abortTimer !== undefined) {
+          clearTimeout(handle.abortTimer);
+          handle.abortTimer = undefined;
+        }
+        handle.abortInFlight = false;
+      }
       this.emit(handle, normalized);
     }
   }
@@ -767,6 +1064,7 @@ export class SessionRegistry {
     key: string,
     options: { provisional: boolean },
   ): void {
+    this.aliases.delete(key);
     handle.sessionPath = options.provisional ? key : key;
     this.sessions.set(handle.sessionPath, handle);
     this.emit(handle, { type: "session_started", sessionPath: handle.sessionPath });
@@ -815,6 +1113,9 @@ export class SessionRegistry {
 
   /** 停掉并清账。 */
   private dispose(handle: SessionHandle, reason: string): void {
+    handle.dead = true;
+    for (const settle of handle.controlWaiters.values()) settle({ subtype: "error" });
+    handle.controlWaiters.clear();
     const key = handle.sessionPath;
     if (key.length === 0 || this.sessions.get(key) !== handle) {
       // 可能是临时键（init 之前就挂了）。
@@ -835,6 +1136,11 @@ export class SessionRegistry {
       clearTimeout(timer);
       this.idleTimers.delete(key);
     }
+    if (handle.abortTimer !== undefined) {
+      clearTimeout(handle.abortTimer);
+      handle.abortTimer = undefined;
+    }
+    handle.abortInFlight = false;
 
     for (const event of handle.normalizer.finalize(reason)) this.emit(handle, event);
 
@@ -843,6 +1149,23 @@ export class SessionRegistry {
       this.emit(handle, { type: "permission_resolved", requestId, behavior: "deny", reason });
     }
     handle.pending.clear();
+
+    // 挂着的中继调用必须被唤醒 —— 它的 HTTP 请求还在等一个结果，
+    // 不 resolve 的话那个连接会一直吊着，直到中继超时。
+    for (const settle of handle.askWaiters.values()) {
+      settle({
+        behavior: "deny",
+        message: `会话已关闭（${reason}），这次工具调用没有执行。`,
+        decisionClassification: "user_reject",
+      });
+    }
+    handle.askWaiters.clear();
+
+    // 临时 MCP 配置文件随会话一起删。留着的话每个会话都会在临时目录积一份。
+    if (handle.mcpConfigPath !== null) {
+      removeMcpConfig(handle.mcpConfigPath);
+      handle.mcpConfigPath = null;
+    }
 
     try {
       if (!handle.child.killed) handle.child.kill();
@@ -876,16 +1199,25 @@ export class SessionRegistry {
         await self.send(handle, text, images);
       },
       async abort() {
-        self.writeLine(handle, interruptCommand());
-        self.touch(handle);
+        self.abortHandle(handle);
       },
       async getMessages() {
         // 进程内视角可能因为压缩而与文件不同，但文件是用户 `claude --resume`
         // 看到的那一份。为了「两边永远一致」，这里一律读文件。
+        // 首轮结束前文件尚未落盘（或刚触碰尚无内容），返回内存中已发送的消息。
+        if (!existsSync(handle.sessionPath)) {
+          return handle.unflushedMessages;
+        }
         const snapshot = await readSnapshot(handle.sessionPath);
+        if (snapshot.messages.length === 0 && handle.unflushedMessages.length > 0) {
+          return handle.unflushedMessages;
+        }
         return snapshot.messages;
       },
       async getForkMessages() {
+        if (!existsSync(handle.sessionPath)) {
+          return [];
+        }
         const snapshot = await readSnapshot(handle.sessionPath);
         return snapshot.forkPoints;
       },
@@ -896,12 +1228,21 @@ export class SessionRegistry {
         const forked = await self.forkSession(handle);
         return { text: forked.sessionPath, cancelled: false };
       },
+      async getContextUsage() {
+        return await self.queryContext(handle);
+      },
       async getState() {
         return await self.stateOf(handle);
       },
       async setModel(_provider, id) {
         self.writeLine(handle, setModelCommand(id));
         handle.initModel = id;
+        self.touch(handle);
+      },
+      async setThinkingLevel(level) {
+        const tokens = thinkingTokensForLevel(level);
+        self.writeLine(handle, setMaxThinkingTokensCommand(tokens));
+        handle.thinkingLevel = level;
         self.touch(handle);
       },
       async setAutoCompaction(_enabled) {
@@ -926,6 +1267,9 @@ export class SessionRegistry {
       },
       async exportHtml(target) {
         // 导出成 HTML 是本项目自己的能力：把 jsonl 渲染成一份自包含页面。
+        if (!existsSync(handle.sessionPath)) {
+          throw new SessionRegistryError("no-session", "会话尚未落盘，无法导出");
+        }
         const snapshot = await readSnapshot(handle.sessionPath);
         const path = await writeTranscriptHtml(
           handle.sessionPath,
@@ -935,6 +1279,16 @@ export class SessionRegistry {
         return { path };
       },
       async getSessionStats() {
+        if (!existsSync(handle.sessionPath)) {
+          return {
+            totalMessages: handle.unflushedMessages.length,
+            userMessages: handle.unflushedMessages.length,
+            assistantMessages: 0,
+            toolCalls: 0,
+            tokens: { total: 0 },
+            cost: 0,
+          };
+        }
         const snapshot = await readSnapshot(handle.sessionPath);
         let userMessages = 0;
         let assistantMessages = 0;
@@ -986,6 +1340,9 @@ export class SessionRegistry {
     }
     if (this.activeCount() >= this.maxActiveSessions) await this.evictOldest();
 
+    const relayId = randomUUID();
+    const mcpConfigPath = writeMcpConfig(relayId, PORT);
+
     const args = [
       "-p",
       "--input-format",
@@ -997,6 +1354,11 @@ export class SessionRegistry {
       "--resume",
       handle.sessionId,
       "--fork-session",
+      // fork 出来的会话同样要弹权限卡，理由与 `spawnProcess` 一致。
+      "--permission-prompt-tool",
+      PERMISSION_PROMPT_TOOL,
+      "--mcp-config",
+      mcpConfigPath,
     ];
     if (this.settingsPath !== null && this.settingsPath.length > 0) {
       args.push("--settings", this.settingsPath);
@@ -1019,6 +1381,10 @@ export class SessionRegistry {
       normalizer: new Normalizer(),
       initialized: false,
       pending: new Map(),
+      askWaiters: new Map(),
+      // 必须用本地那两个变量：`randomUUID()` 再叫一次会和配置文件里的 id 对不上。
+      relayId,
+      mcpConfigPath,
       controlWaiters: new Map(),
       streaming: false,
       resumeId: handle.sessionId,
@@ -1026,6 +1392,10 @@ export class SessionRegistry {
       lastUsage: null,
       slashCommands: null,
       dead: false,
+      unflushedMessages: [],
+      thinkingLevel: handle.thinkingLevel,
+      // fork 出来的会话承载着原会话的历史，永远不是「可认领的空进程」。
+      spare: false,
       client: null as unknown as SessionClient,
     };
     forked.client = this.makeClient(forked);
@@ -1062,6 +1432,8 @@ export class SessionRegistry {
   private async stateOf(handle: SessionHandle): Promise<{
     model: { provider: string; id: string } | null;
     thinkingLevel: string;
+    /** 会话级权限模式。`system:init.permissionMode` 是权威值，这里如实转出。 */
+    permissionMode: PermissionMode;
     isStreaming: boolean;
     isCompacting: boolean;
     sessionFile: string | null;
@@ -1075,9 +1447,10 @@ export class SessionRegistry {
     return {
       model:
         handle.initModel === null ? null : { provider: "claude", id: handle.initModel },
-      // Claude Code 的思考强度是 per-model 的 `effortLevel`，不是会话级 thinkingLevel。
-      // 这里报 "off" 表示「不是通过本界面调的」，避免编一个假值。
-      thinkingLevel: "off",
+      thinkingLevel:
+        handle.thinkingLevel ??
+        (handle.initModel ? ((await effortLevelFor(handle.initModel)) ?? "auto") : "auto"),
+      permissionMode: handle.permissionMode,
       isStreaming: handle.streaming,
       isCompacting: false,
       sessionFile: handle.sessionPath.length > 0 ? handle.sessionPath : null,
@@ -1087,6 +1460,56 @@ export class SessionRegistry {
       pendingMessageCount: 0,
       autoCompactionEnabled: true,
     };
+  }
+
+  /** 上下文查询只走控制平面；并发读取共用请求，超时或进程退出都释放等待者。 */
+  private queryContext(handle: SessionHandle): Promise<ComposerContext | null> {
+    if (handle.dead) return Promise.resolve(null);
+    const pending = this.contextRequests.get(handle);
+    if (pending !== undefined) return pending;
+    const modelAtRequest = handle.initModel;
+    const requestId = `ctx-${randomUUID()}`;
+    const response = new Promise<Record<string, unknown>>((resolveResponse) => {
+      const finish = (payload: Record<string, unknown>): void => {
+        clearTimeout(timer);
+        handle.controlWaiters.delete(requestId);
+        resolveResponse(payload);
+      };
+      const timer = setTimeout(() => finish({ subtype: "error" }), 5000);
+      timer.unref?.();
+      handle.controlWaiters.set(requestId, finish);
+      try {
+        this.writeLine(handle, getContextUsageCommand("summary", requestId));
+      } catch {
+        finish({ subtype: "error" });
+      }
+    });
+    const request = response.then(async (payload) => {
+      // 查询期间切换模型的回执不再描述当前模型，不能把旧窗口写到新模型名下。
+      if (handle.dead || handle.initModel !== modelAtRequest) return null;
+      const context = contextUsageFromResponse(payload);
+      if (context !== null && !handle.sessionPath.startsWith("draft:")) {
+        let model = handle.initModel;
+        if (model === null) {
+          const snapshot = await readSnapshot(handle.sessionPath).catch(() => null);
+          for (const message of [...(snapshot?.messages ?? [])].reverse()) {
+            if (message.role !== "assistant") continue;
+            const id = (message as { model?: string }).model;
+            if (typeof id === "string" && id.length > 0) {
+              model = id;
+              break;
+            }
+          }
+        }
+        // 持久化失败不能丢掉已经取得的实时数据；不修改 CLI 的 jsonl。
+        await rememberSessionWindow(handle.sessionPath, model, context.contextWindow).catch(() => undefined);
+      }
+      return context;
+    }).finally(() => {
+      this.contextRequests.delete(handle);
+    });
+    this.contextRequests.set(handle, request);
+    return request;
   }
 
   /** 单写者：一次一行的原子写。 */
@@ -1147,7 +1570,7 @@ export class SessionRegistry {
 
   /** 标记句柄已死，下次请求会重开。 */
   markDead(sessionPath: string): void {
-    const handle = this.sessions.get(sessionPath);
+    const handle = this.get(sessionPath);
     if (handle === undefined) return;
     handle.dead = true;
     this.dispose(handle, "marked_dead");
@@ -1209,29 +1632,86 @@ export class SessionRegistry {
   /**
    * 预热：为项目起一个进程，让第一次发消息不用等 1–2 秒。
    *
-   * 预热出来的会话还没有 `system:init` 的 id，所以它挂在项目路径下的临时键上。
+   * 预热出来的会话还没有 `system:init` 的 id，所以它挂在
+   * `draft:<token>|<项目>` 这个每个进程唯一的临时键上。
+   *
+   * **不能拿 `findLive` 当「已经预热过了」的判据**：那会把用户正开着的会话也算进去，
+   * 于是这个项目永远不再预热；更糟的是调用方拿到那个句柄后把它当新会话用。
    */
   async prewarm(projectPath: string): Promise<void> {
-    if (this.findLive(projectPath) !== undefined) return;
+    if (this.findSpare(projectPath) !== undefined) return;
     if (this.activeCount() >= this.maxActiveSessions) return;
     try {
-      await this.create(projectPath);
+      await this.create(projectPath, { spare: true });
     } catch {
       // 预热失败不是错误：用户发第一条消息时会再试一次并拿到真正的错误。
     }
   }
 
-  /** 预热并返回句柄（拿不到就 null）。 */
+  /**
+   * 预热并返回句柄（拿不到就 null）。
+   *
+   * 有「还没说过话」的预热进程就复用它；项目里只有正在聊的会话时，**不能**把那个
+   * 会话交回去当预热产物 —— 调用方要的是一个不承载任何历史的进程。此时返回 null，
+   * 让调用方自己决定（读设置页会显示「不可用」，而不是读到别人会话的配置）。
+   */
   async ensurePrewarmed(projectPath: string): Promise<SessionHandle | null> {
-    const existing = this.findLive(projectPath);
+    const existing = this.findSpare(projectPath) ?? this.findResident(projectPath);
     if (existing !== undefined) return existing;
     await this.prewarm(projectPath);
-    return this.findLive(projectPath) ?? null;
+    return this.findSpare(projectPath) ?? this.findResident(projectPath) ?? null;
   }
 
-  /** 认领一个已经预热好的会话（避免重复起进程）。 */
+  /**
+   * 认领一个已经预热好的空进程（避免重复起进程）。
+   *
+   * **只认领真正「还没说过话」的预热进程。** 这里曾经直接返回
+   * `findLive(projectPath)` —— 那是该项目下**任意一个**活会话，包括用户正开着的、
+   * 已经聊了几十分钟的那个。认领它之后，新建会话返回的 draft 键要么撞上它的别名，
+   * 要么直接被它接管：新会话的第一条消息写进了别人的对话，界面上却一直显示
+   * 「正在准备会话」，因为从头到尾就没有新会话。
+   *
+   * 认领成功即清掉 `spare`：从这一刻起它属于那一次新建会话，任何别的调用都不能
+   * 再把它当成空进程交出去。预热则重新补一个。
+   */
   claimPrewarmed(projectPath: string): SessionHandle | null {
-    return this.findLive(projectPath) ?? null;
+    const handle = this.findSpare(projectPath);
+    if (handle === undefined) return null;
+    handle.spare = false;
+    this.touch(handle);
+    return handle;
+  }
+
+  /**
+   * 找一个可认领的空进程，**不消耗**它的 spare 标记。
+   *
+   * 给 `prewarm`（判断「这个项目已经有预热了」）和 `ensurePrewarmed`（只读地借一个
+   * 进程读设置）用：前者不该因为查询就把别处等着认领的进程消耗掉，后者更不能把
+   * 一个本要交给「新建会话」的进程占走。
+   */
+  findSpare(projectPath: string): SessionHandle | undefined {
+    for (const handle of new Set(this.sessions.values())) {
+      if (handle.projectPath !== projectPath) continue;
+      if (handle.dead || handle.initialized || handle.streaming) continue;
+      if (!handle.spare) continue;
+      return handle;
+    }
+    return undefined;
+  }
+
+  /**
+   * 项目里任意一个还活着的会话。
+   *
+   * 只给「读设置」这类**不介意共享**的调用方用 —— 它必须接受一个正在聊的会话，
+   * 因为那正是用户此刻的配置来源。**绝不能用它来实现新建会话或预热认领**，
+   * 那会把别人的对话当成新会话。
+   */
+  findResident(projectPath: string): SessionHandle | undefined {
+    for (const handle of new Set(this.sessions.values())) {
+      if (handle.dead) continue;
+      if (handle.projectPath === projectPath) return handle;
+    }
+    return undefined;
   }
 
   /**

@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import clsx from "clsx";
 import { AlertIcon, RefreshIcon } from "../../components/icons.tsx";
 import { Glyph } from "../../components/dsh-icons.tsx";
 import { api } from "../../lib/api.ts";
@@ -8,11 +9,12 @@ import { rightbarActions, rightbarStore } from "../rightbar/rightbar-state.ts";
 import { publishTurnChanges, type TurnChanges } from "../rightbar/turn-changes-store.ts";
 import { PanelRightIcon } from "../rightbar/rightbar-icons.tsx";
 import { shortcutTitle } from "../rightbar/shortcuts.ts";
-import type { ImageBlock } from "../../lib/types.ts";
+import type { AgentMessage, ImageBlock } from "../../lib/types.ts";
 import { Composer } from "./Composer.tsx";
 import { PermissionDeniedCard } from "./PermissionCard.tsx";
+import { PermissionRequestCard } from "./PermissionRequestCard.tsx";
 import { QuestionCard } from "./QuestionCard.tsx";
-import type { PermissionMode } from "./PermissionModeSwitch.tsx";
+import { permissionBanner, type PermissionMode } from "./PermissionModeSwitch.tsx";
 import { SessionStats } from "./SessionStats.tsx";
 import { MessageList } from "./MessageList.tsx";
 import { NewSessionHero } from "./NewSessionHero.tsx";
@@ -32,6 +34,65 @@ export function ConversationPane() {
   const sessionPath = draft ? null : selected;
 
   const conversation = useConversation(sessionPath);
+
+  /**
+   * Is the session this draft is becoming running right now?
+   *
+   * `useConversation` cannot answer while the path is still `draft:` — it is
+   * given `null` and never subscribes. But the app-wide run mark is kept under
+   * the path the server is currently using, which for a fresh session is
+   * exactly the draft key. Reading it here is what keeps the Stop button on
+   * screen for the first turn, before `system:init` swaps the key.
+   */
+  const draftRunning = draft && selected !== null
+    ? state.sessionActivity[selected] === "ongoing"
+    : false;
+
+  /**
+   * 会话还没落盘时，把「刚发出去的那条消息」画进转录。
+   *
+   * 新建会话的第一条消息由 `startDraftSession` 直接 POST，而这段窗口里
+   * `useConversation` 根本没挂载（没有路径可订阅），也没有磁盘转录可读 ——
+   * 不留这一条，用户看到的就是自己打出去的字凭空消失，一直要到回复结束、
+   * 会话落到 jsonl 上才重新出现。会话拿到真实路径后 `renameSessionPath` 会清掉它，
+   * 之后以磁盘那份为准，不会画两遍。
+   */
+  const draftMessage = state.draftFirstMessage;
+  const optimisticView = useMemo(() => {
+    if (!draft || draftMessage === null || draftMessage.sessionPath !== selected) return conversation;
+    const message: AgentMessage = {
+      role: "user",
+      content:
+        draftMessage.images.length === 0
+          ? draftMessage.text
+          : [{ type: "text", text: draftMessage.text }, ...draftMessage.images],
+      timestamp: draftMessage.at,
+    };
+    return {
+      ...conversation,
+      messages: [message, ...conversation.messages],
+      // 这条消息已经交给服务端了，但它还没有开启任何一轮 —— 让分组把它算进
+      // 「尚未被接走」的那一侧，免得转录在回复到达前就显示出一个空轮次。
+      undeliveredPrompts: conversation.undeliveredPrompts + 1,
+    };
+  }, [conversation, draft, draftMessage, selected]);
+
+  useEffect(() => {
+    if (!draft || !selected) return;
+    let cancelled = false;
+    void api
+      .getState(selected)
+      .then((res) => {
+        if (cancelled) return;
+        if (res?.sessionPath && res.sessionPath !== selected && !isDraftSession(res.sessionPath)) {
+          actions.renameSessionPath(selected, res.sessionPath);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [draft, selected]);
   // The right sidebar's state is per session, so the header's toggle reads the
   // same surface the panel itself does. It is drawn only while the panel is
   // hidden — when it is open, the panel's own strip carries the collapse
@@ -62,10 +123,31 @@ export function ConversationPane() {
   const session = sessions.find((candidate) => candidate.path === selected);
 
   /**
-   * 权限模式。**会话级状态**，由服务端在 `system:init` 里报回权威值；
-   * 这里只记「用户上一次切到什么」，新建会话重新从 default 开始。
+   * 权限模式。**会话级状态**，权威值在服务端句柄上（`system:init.permissionMode`）。
+   *
+   * 这里保留一份本地值是为了**点击立刻生效**，但每次会话切换都要重新对齐 ——
+   * 否则从「跳过全部检查」的会话切到别的会话，横幅会跟着跑过去，而那个会话
+   * 其实还是默认模式。`null` 只表示「还没读到」，此时按钮显示「未知模式」。
    */
   const [permissionMode, setPermissionMode] = useState<PermissionMode | null>(null);
+
+  useEffect(() => {
+    // 会话换了就把上一份清掉，避免把一个会话的模式显示成另一个会话的。
+    setPermissionMode(null);
+    if (sessionPath === null) return;
+    let cancelled = false;
+    void api
+      .getState(sessionPath)
+      .then((res) => {
+        if (cancelled) return;
+        const mode = res?.state?.permissionMode;
+        if (typeof mode === "string") setPermissionMode(mode as PermissionMode);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionPath]);
 
   const changePermissionMode = useCallback(
     async (mode: PermissionMode): Promise<void> => {
@@ -84,6 +166,7 @@ export function ConversationPane() {
     },
     [sessionPath, draft, permissionMode],
   );
+  const banner = permissionBanner(permissionMode);
   const isExternal = selected ? Boolean(state.externalChanged[selected]) : false;
   const commands = state.selectedProjectId ? (state.commands[state.selectedProjectId] ?? []) : [];
 
@@ -114,11 +197,45 @@ export function ConversationPane() {
       if (!draft) return false;
       const realPath = await actions.resolveDraftSession();
       if (!realPath) return false;
-      actions.queuePendingPrompt(realPath, text, mode, images);
-      return true;
+      try {
+        const res = await api.prompt(realPath, text, images);
+        if (res?.sessionPath && res.sessionPath !== realPath && !isDraftSession(res.sessionPath)) {
+          actions.renameSessionPath(realPath, res.sessionPath);
+        }
+        return true;
+      } catch (err) {
+        actions.setNotice((err as Error).message);
+        return false;
+      }
     },
     [sessionPath, draft, conversation, commands],
   );
+
+  /**
+   * Stop the current turn.
+   *
+   * `conversation.abort()` needs a real session path, and a draft has none —
+   * `useConversation` is handed `null` until the spawn resolves. So while the
+   * first message is still waiting on that spawn (or the CLI is already
+   * retrying under a draft key), pressing Stop used to return silently: no
+   * request at all, and no way to call the turn off. Resolving the draft first
+   * gives it something to stop once the session exists, which is exactly the
+   * process that was spawned for it.
+   */
+  const abortTurn = useCallback(async (): Promise<void> => {
+    if (sessionPath) {
+      await conversation.abort();
+      return;
+    }
+    if (!draft) return;
+    const target = await actions.resolveDraftSession();
+    if (!target) return;
+    try {
+      await api.abort(target);
+    } catch (err) {
+      actions.setNotice((err as Error).message);
+    }
+  }, [sessionPath, draft, conversation]);
 
   const reload = async (): Promise<void> => {
     await conversation.reload();
@@ -223,6 +340,25 @@ export function ConversationPane() {
         ) : null}
       </header>
 
+      {/*
+       * 放宽权限的常驻提示。`bypassPermissions` 下所有工具都不再问你，这件事
+       * 不能只写在那个小小的模式按钮上 —— 它必须一直在视野里，直到主人改回去。
+       */}
+      {banner !== null ? (
+        <div
+          className={clsx(
+            styles.modeBanner,
+            banner.level === "danger" ? styles.modeBannerDanger : styles.modeBannerWarn,
+          )}
+          role="status"
+        >
+          <span className={styles.bannerIcon}>
+            <AlertIcon />
+          </span>
+          <span className={styles.modeBannerText}>{banner.text}</span>
+        </div>
+      ) : null}
+
       {isExternal ? (
         <div className={styles.banner} role="status">
           <span className={styles.bannerIcon}>
@@ -241,7 +377,7 @@ export function ConversationPane() {
       ) : null}
 
       <MessageList
-        view={conversation}
+        view={optimisticView}
         cwd={project?.path}
         home={state.home}
         transcriptView={state.settings.transcriptDisplay}
@@ -256,6 +392,8 @@ export function ConversationPane() {
               // visible.
               onOpenChanges: (turn: number, index: number) =>
                 rightbarActions.openTurnChangesTab(sessionPath, turn, index),
+              onOpenFile: (path: string) =>
+                rightbarActions.openPreviewTab(sessionPath, path),
               onTurnChanges: publishChanges,
               // pi has no "try that turn again" RPC — its own retry loop is the
               // only one it offers, and it runs inside a turn. Re-sending the
@@ -287,9 +425,33 @@ export function ConversationPane() {
           ))}
         </div>
       ) : null}
+      {/*
+       * 权限提问卡占的是同一个「座位」：CLI 那一轮正卡在它身上，让它和输入框
+       * 并存只会让人以为消息还能照发。多个提问同时挂起时按到达顺序排开。
+       */}
+      {conversation.permissionRequests.length > 0 ? (
+        <div className={styles.denials}>
+          {conversation.permissionRequests.map((request) => (
+            <PermissionRequestCard
+              key={request.requestId}
+              request={request}
+              onAnswer={(requestId, classification) =>
+                conversation.answerPermission(requestId, classification)
+              }
+            />
+          ))}
+        </div>
+      ) : null}
       {questionCard ?? (
         <Composer
-          isStreaming={conversation.isStreaming}
+          /*
+           * 草稿期也要显示「停止」。`useConversation` 在 draft 阶段拿到的是 null
+           * 路径，它自己的 `isStreaming` 永远是 false；可服务端那一轮已经开跑了
+           * （`agent_start` 是按 draft 键下发的，app state 把它记成了 "ongoing"）。
+           * 不并上这个标记，首条消息发出后到 `system:init` 改名之间，输入框右侧
+           * 只有「发送」没有「停止」。
+           */
+          isStreaming={conversation.isStreaming || draftRunning}
           disabled={conversation.loading}
           commands={commands}
           busySendBehavior={state.settings.busySendBehavior}
@@ -299,10 +461,12 @@ export function ConversationPane() {
               : {
                   model: composer.state?.model ?? null,
                   models: composer.state?.models ?? null,
+                  thinkingLevel: composer.state?.thinkingLevel ?? "auto",
                   context: composer.state?.context ?? null,
                   loading: composer.modelsLoading,
                   onRequestLive: () => void composer.ensureLive(),
                   onSelectModel: (provider, id) => void composer.selectModel(provider, id),
+                  onChangeThinkingLevel: (level) => void composer.selectThinkingLevel(level),
                   permissionMode,
                   onChangePermissionMode: (mode) => {
                     void changePermissionMode(mode);
@@ -310,7 +474,7 @@ export function ConversationPane() {
                 }
           }
           onSend={sendMessage}
-          onAbort={() => void conversation.abort()}
+          onAbort={() => void abortTurn()}
           workspacePath={project?.path}
         />
       )}

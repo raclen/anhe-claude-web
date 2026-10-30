@@ -30,14 +30,30 @@ export function isDraftPath(input: string): boolean {
   return input.startsWith(DRAFT_PREFIX);
 }
 
-/** `draft:<项目路径>` → 项目路径。 */
+/**
+ * `draft:[<token>|]<项目路径>` → 项目路径。
+ *
+ * `|` 既不是合法的 Windows 路径字符，也不会出现在 uuid 里，所以第一个 `|`
+ * 一定是分隔符；没有 `|` 的是旧格式（服务重启前遗留的键），整段都是项目路径。
+ */
 export function draftProjectPath(input: string): string {
-  return input.slice(DRAFT_PREFIX.length);
+  const rest = input.slice(DRAFT_PREFIX.length);
+  const separator = rest.indexOf("|");
+  return separator < 0 ? rest : rest.slice(separator + 1);
 }
 
-/** 为一个还没落盘的新会话造一个地址。 */
-export function makeDraftPath(projectPath: string): string {
-  return `${DRAFT_PREFIX}${projectPath}`;
+/**
+ * 为一个还没落盘的新会话造一个地址。
+ *
+ * **`token` 必须每个进程一个。** 只用项目路径当键的话，同一个项目的两个新会话
+ * 会登记到同一个键上，第二次 `track` 直接把第一次的句柄顶掉；更糟的是这个键在
+ * 第一个会话拿到 `system:init` 后进了别名表，于是「新建会话」拿到的 draft 键
+ * 会解析回那个**已经聊过很久**的旧会话，新消息全写进别人的对话里。
+ */
+export function makeDraftPath(projectPath: string, token = ""): string {
+  return token === ""
+    ? `${DRAFT_PREFIX}${projectPath}`
+    : `${DRAFT_PREFIX}${token}|${projectPath}`;
 }
 
 /**

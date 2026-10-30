@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { Translate } from "../../lib/i18n/index.ts";
 import { ChevronIcon } from "../../components/icons.tsx";
-import { DiffIcon, FileIcon } from "../rightbar/rightbar-icons.tsx";
+import { DiffIcon, ExternalIcon, FileIcon } from "../rightbar/rightbar-icons.tsx";
 import { parseUnifiedDiff } from "../rightbar/diff-parse.ts";
 import type { TurnFile } from "./turn-files.ts";
 import styles from "./ChangedFilesCard.module.css";
@@ -73,12 +73,14 @@ export function ChangedFilesCard({
   files,
   turn,
   onOpenChanges,
+  onOpenFile,
 }: {
   files: readonly TurnFile[];
   /** The turn these files belong to — what a review tab is addressed by. */
   turn: number;
   /** Absent when the sidebar cannot be addressed (no session path yet). */
   onOpenChanges?: ((turn: number, index: number) => void) | undefined;
+  onOpenFile?: ((path: string) => void) | undefined;
 }) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
@@ -103,10 +105,19 @@ export function ChangedFilesCard({
   const deleted = files.reduce((total, file) => total + file.deleted, 0);
 
   const openable = onOpenChanges !== undefined;
-  /** Open the turn's review on one file; the card never previews a file itself. */
-  const openAt = (index: number): void => {
-    // The hover comparison has done its job once the panel that replaces it is
-    // asked for; leaving it up would draw two copies of the same diff.
+  /** Open the file in the right sidebar's Preview tab, falling back to turn diff. */
+  const previewAt = (index: number): void => {
+    cancelPreview();
+    const file = files[index];
+    if (file?.relative && onOpenFile) {
+      onOpenFile(file.relative);
+      return;
+    }
+    onOpenChanges?.(turn, index);
+  };
+
+  /** Open the turn's diff review on one file in the right sidebar. */
+  const reviewDiffAt = (index: number): void => {
     cancelPreview();
     onOpenChanges?.(turn, index);
   };
@@ -184,13 +195,95 @@ export function ChangedFilesCard({
       data-place={below ? "below" : "above"}
     >
       <div className={styles.card}>
-        {openable ? (
+        {single !== undefined ? (
+          <div className={styles.header}>
+            {openable || (single.relative && onOpenFile) ? (
+              <button
+                type="button"
+                className={styles.headerMain}
+                aria-label={
+                  single.relative && onOpenFile
+                    ? t("turnChanges.openFileAria", { name: single.display })
+                    : headerLabel
+                }
+                title={
+                  single.relative && onOpenFile
+                    ? t("turnChanges.openFileAria", { name: single.display })
+                    : single.path
+                }
+                onClick={() => previewAt(0)}
+                {...hoverProps(single, 0)}
+              >
+                <span className={styles.tile}>
+                  <FileIcon width={18} height={18} />
+                </span>
+                <span className={styles.titles}>
+                  <span className={styles.title}>
+                    {t("editedFiles.singleTitle", { name: basename(single.display) })}
+                  </span>
+                  <span className={styles.stat}>
+                    <span className={styles.statCounts}>{fileCounts(single, t)}</span>
+                    <span className={styles.previewHint}>
+                      {single.relative && onOpenFile
+                        ? t("turnChanges.openFile")
+                        : t("editedFiles.previewHint")}
+                    </span>
+                  </span>
+                </span>
+              </button>
+            ) : (
+              <>
+                <span className={styles.tile}>
+                  <FileIcon width={18} height={18} />
+                </span>
+                <span className={styles.titles}>
+                  <span className={styles.title}>
+                    {t("editedFiles.singleTitle", { name: basename(single.display) })}
+                  </span>
+                  <span className={styles.stat}>
+                    <span className={styles.statCounts}>{fileCounts(single, t)}</span>
+                  </span>
+                </span>
+              </>
+            )}
+
+            <div className={styles.headerActions}>
+              {openable ? (
+                <button
+                  type="button"
+                  className={styles.headerActionBtn}
+                  title={t("editedFiles.viewDiff", { name: single.display })}
+                  aria-label={t("editedFiles.viewDiff", { name: single.display })}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    reviewDiffAt(0);
+                  }}
+                >
+                  <DiffIcon width={15} height={15} />
+                </button>
+              ) : null}
+              {single.relative && onOpenFile ? (
+                <button
+                  type="button"
+                  className={styles.headerActionBtn}
+                  title={t("turnChanges.openFile")}
+                  aria-label={t("turnChanges.openFileAria", { name: single.display })}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    previewAt(0);
+                  }}
+                >
+                  <ExternalIcon width={14} height={14} />
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : openable ? (
           <button
             type="button"
             className={styles.header}
             aria-label={headerLabel}
-            onClick={() => openAt(0)}
-            {...(single === undefined ? {} : hoverProps(single, 0))}
+            onClick={() => reviewDiffAt(0)}
           >
             {header}
           </button>
@@ -205,26 +298,61 @@ export function ChangedFilesCard({
               const label = <span className={styles.path}>{file.display}</span>;
               const badge = <span className={styles.counts}>{fileCounts(file, t)}</span>;
               const hover = hoverProps(file, index);
+              const canPreview = Boolean(file.relative && onOpenFile);
               return (
-                <li key={file.path}>
-                  {openable ? (
+                <li key={file.path} className={styles.rowItem}>
+                  <div className={styles.row}>
                     <button
                       type="button"
-                      className={styles.row}
-                      title={file.path}
-                      aria-label={t("editedFiles.viewDiff", { name: file.display })}
-                      onClick={() => openAt(index)}
+                      className={styles.rowMain}
+                      title={
+                        canPreview
+                          ? t("turnChanges.openFileAria", { name: file.display })
+                          : file.path
+                      }
+                      aria-label={
+                        canPreview
+                          ? t("turnChanges.openFileAria", { name: file.display })
+                          : file.display
+                      }
+                      onClick={() => previewAt(index)}
                       {...hover}
                     >
                       {label}
-                      {badge}
                     </button>
-                  ) : (
-                    <div className={styles.row} title={file.path} {...hover}>
-                      {label}
-                      {badge}
+                    <div className={styles.rowActions}>
+                      {openable ? (
+                        <button
+                          type="button"
+                          className={styles.rowBadge}
+                          title={t("editedFiles.viewDiff", { name: file.display })}
+                          aria-label={t("editedFiles.viewDiff", { name: file.display })}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            reviewDiffAt(index);
+                          }}
+                        >
+                          {badge}
+                        </button>
+                      ) : (
+                        badge
+                      )}
+                      {canPreview ? (
+                        <button
+                          type="button"
+                          className={styles.previewBtn}
+                          title={t("turnChanges.openFile")}
+                          aria-label={t("turnChanges.openFileAria", { name: file.display })}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            previewAt(index);
+                          }}
+                        >
+                          <ExternalIcon width={12} height={12} />
+                        </button>
+                      ) : null}
                     </div>
-                  )}
+                  </div>
                 </li>
               );
             })}

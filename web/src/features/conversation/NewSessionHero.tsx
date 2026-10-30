@@ -7,12 +7,14 @@ import {
   SendIcon,
 } from "../../components/icons.tsx";
 import { actions, appStore, useT } from "../../lib/app-state.ts";
-import { PI_MARK_URL } from "../../lib/brand.ts";
+import { BRAND_MARK_URL } from "../../lib/brand.ts";
 import { useStore } from "../../lib/store.ts";
 import { AttachmentInput, AttachmentStrip, AttachButton } from "./AttachmentStrip.tsx";
 import { DraftMirror } from "./DraftMirror.tsx";
 import { useReferenceDraft } from "./useReferenceDraft.ts";
 import { ModelPicker } from "./ModelPicker.tsx";
+import { PermissionModeSwitch } from "./PermissionModeSwitch.tsx";
+import { ThinkingPicker } from "./ThinkingPicker.tsx";
 import { SlashMenu } from "./SlashMenu.tsx";
 import { useComposerState } from "./useComposerState.ts";
 import { useImageDraft } from "./useImageDraft.ts";
@@ -176,7 +178,14 @@ export function NewSessionHero() {
     // that replaces it once pi is ready. Only a model the user actually chose
     // is passed on: null means "start on pi's default", which is not the same
     // request as naming the model pi would have picked anyway.
-    actions.startDraftSession(project.id, outgoing, attachments, state.newSessionModel);
+    actions.startDraftSession(
+      project.id,
+      outgoing,
+      attachments,
+      state.newSessionModel,
+      state.newSessionThinkingLevel,
+      state.newSessionPermissionMode,
+    );
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -206,7 +215,7 @@ export function NewSessionHero() {
     <div className={styles.hero}>
       <div className={styles.inner}>
         <div className={styles.titleRow}>
-          <img className={styles.mark} src={PI_MARK_URL} alt="" draggable={false} />
+          <img className={styles.mark} src={BRAND_MARK_URL} alt="" draggable={false} />
           <h1 className={styles.title}>{t("hero.title")}</h1>
           <span className={styles.badge}>{t("hero.badge")}</span>
         </div>
@@ -267,6 +276,23 @@ export function NewSessionHero() {
               onFiles={(files) => void draft.attach(files)}
             />
             <span className={styles.toolbarHint}>{t("hero.keyboardHint")}</span>
+            {/*
+             * 新会话页也要能选权限模式：这里的决定会作为 `--permission-mode`
+             * 跟着进程一起起来，而不是等会话建好再切。不选就是 CLI 的默认（Manual）。
+             */}
+            {project ? (
+              <PermissionModeSwitch
+                mode={state.newSessionPermissionMode}
+                onChange={(mode) => actions.setNewSessionPermissionMode(mode)}
+              />
+            ) : null}
+            {project ? (
+              <ThinkingPicker
+                level={composer.state?.thinkingLevel ?? "auto"}
+                disabled={composer.state?.model ? !composer.state.model.reasoning : false}
+                onChange={(level) => void composer.selectThinkingLevel(level)}
+              />
+            ) : null}
             {project ? (
               <ModelPicker
                 model={composer.state?.model ?? null}
