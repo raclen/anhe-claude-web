@@ -1,8 +1,6 @@
 /*
  * 权限模式切换。视觉上沿用 ModelPicker 的「像卡片的一部分，不像按钮」的调子，
- * 但多两个必须突出的东西：
- *   1. 一个模式指示点（绿=默认，黄=放宽，红=危险）；
- *   2. 危险模式的一次性确认层。
+ * 但保留危险模式的一次性确认层。
  */
 
 .anchor {
@@ -16,7 +14,6 @@
 .trigger {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
   min-width: 0;
   max-width: 200px;
   padding: 3px 8px;
@@ -52,25 +49,6 @@
 .danger[aria-expanded="true"] {
   color: #c0392b;
   background: rgba(192, 57, 43, 0.14);
-}
-
-.dot {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.55;
-}
-
-.dot[data-risk="danger"] {
-  opacity: 1;
-  background: #c0392b;
-}
-
-.dot[data-risk="warn"] {
-  opacity: 1;
-  background: #d68910;
 }
 
 .label {

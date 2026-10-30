@@ -275,7 +275,7 @@ export function NewSessionHero() {
               inputRef={draft.fileInputRef}
               onFiles={(files) => void draft.attach(files)}
             />
-            <span className={styles.toolbarHint}>{t("hero.keyboardHint")}</span>
+            <span className={styles.spacer} />
             {/*
              * 新会话页也要能选权限模式：这里的决定会作为 `--permission-mode`
              * 跟着进程一起起来，而不是等会话建好再切。不选就是 CLI 的默认（Manual）。

@@ -41,34 +41,32 @@ interface ModeMeta {
 
 export const PERMISSION_MODE_META: Record<PermissionMode, ModeMeta> = {
   default: {
-    // 触发器上只放「默认」两个字：`默认（Manual）` 在窄工具栏里会被省略号吃掉，
-    // 看起来就像一个坏掉的模式名。Manual 是他们 CLI 里的别名，放进 hint 里说。
-    label: "默认",
+    label: "Default",
     hint: "危险操作会停下来问你（CLI 里也叫 Manual）",
     risk: null,
   },
   acceptEdits: {
-    label: "接受编辑",
+    label: "Accept edits",
     hint: "自动接受文件修改，其它操作仍然问",
     risk: "warn",
   },
   plan: {
-    label: "计划模式",
+    label: "Plan",
     hint: "只做计划，不动手改任何东西",
     risk: null,
   },
   dontAsk: {
-    label: "不询问",
+    label: "Don't ask",
     hint: "不弹窗；未预先授权的一律拒绝（比默认更严格）",
     risk: "warn",
   },
   auto: {
-    label: "自动",
+    label: "Auto",
     hint: "由模型判断哪些操作可以自动批准",
     risk: "warn",
   },
   bypassPermissions: {
-    label: "跳过全部检查",
+    label: "Bypass permissions",
     hint: "所有工具都直接执行，不再询问你",
     risk: "danger",
   },
@@ -174,7 +172,6 @@ export function PermissionModeSwitch({ mode, onChange, disabled = false }: Permi
           setHighlight(mode === null ? 0 : PERMISSION_MODE_ORDER.indexOf(mode));
         }}
       >
-        <span className={styles.dot} data-risk={current?.risk ?? "none"} aria-hidden />
         <span className={styles.label}>{current?.label ?? t("permission.unknown")}</span>
       </button>
 
@@ -259,7 +256,7 @@ export function permissionBanner(
   if (meta.risk === "danger") {
     return {
       level: "danger",
-      text: "跳过全部检查已开启：所有工具都会直接执行，不再询问你。用完请切回「默认」。",
+      text: "Bypass permissions 已开启：所有工具都会直接执行，不再询问你。用完请切回 Default。",
     };
   }
   if (meta.risk === "warn") {

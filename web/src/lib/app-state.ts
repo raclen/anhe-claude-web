@@ -706,6 +706,15 @@ export const actions = {
     const request = (async (): Promise<void> => {
       try {
         const result = await api.listCommands(projectId);
+        // 只有内置命令，说明这次请求赶在 pi 进程说出 `slash_commands` 之前。
+        // 那份结果**不能**进缓存：缓存一旦落下去，`!force` 的守卫就会一直
+        // 拿它当「已加载」，skill 命令在菜单里永远不出现。留空让下次再问，
+        // 后续的 `session_init` 也会强制重取一次。
+        const onlyBuiltin = result.commands.every((command) => command.source === "builtin");
+        if (onlyBuiltin && result.error === undefined) {
+          console.warn(`[commands] ${projectId}: 进程尚未注册扩展命令，稍后重试`);
+          return;
+        }
         appStore.update((state) => ({
           ...state,
           commands: { ...state.commands, [projectId]: result.commands },
@@ -1131,6 +1140,22 @@ export const actions = {
   noteSessionActivity(sessionPath: string, event: SessionEvent): void {
     if (event.type === "agent_start") actions.markSessionOngoing(sessionPath);
     else if (event.type === "agent_settled") actions.markSessionSettled(sessionPath);
+    // `system:init` 是进程第一次说出自己有哪些斜杠命令的时刻。项目选中时那次
+    // `loadCommands` 往往赶在进程初始化之前，只拿到 4 条内置命令；那份空壳
+    // 会被当成「已加载」永久缓存，于是 skill 命令在菜单里再也不出现。
+    // 这里用初始化事件做一次强制刷新，把真实列表补上。
+    else if (event.type === "session_init") actions.refreshCommandsForSession(sessionPath);
+  },
+
+  /** 会话所属项目的斜杠命令强制重取；找不到项目时退回当前选中的那个。 */
+  refreshCommandsForSession(sessionPath: string): void {
+    const state = appStore.get();
+    const owner = state.projects.find((project) =>
+      (state.sessions[project.id] ?? []).some((session) => session.path === sessionPath),
+    );
+    const projectId = owner?.id ?? state.selectedProjectId;
+    if (projectId === null || projectId === undefined) return;
+    void actions.loadCommands(projectId, true);
   },
 
   markSessionOngoing(sessionPath: string): void {

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { CheckIcon } from "../../components/icons.tsx";
-import { Glyph } from "../../components/dsh-icons.tsx";
 import styles from "./ThinkingPicker.module.css";
 
 export interface ThinkingOption {
@@ -11,13 +10,13 @@ export interface ThinkingOption {
 }
 
 export const THINKING_OPTIONS: ThinkingOption[] = [
-  { id: "auto", label: "自动", hint: "由模型默认预算决定" },
-  { id: "off", label: "关闭", hint: "不进行思考推理 (0 tokens)" },
-  { id: "low", label: "低", hint: "1,024 tokens 预算" },
-  { id: "medium", label: "中", hint: "4,096 tokens 预算" },
-  { id: "high", label: "高", hint: "8,192 tokens 预算" },
-  { id: "xhigh", label: "较高", hint: "16,384 tokens 预算" },
-  { id: "max", label: "最大", hint: "32,768 tokens 预算" },
+  { id: "auto", label: "Auto", hint: "Model default budget" },
+  { id: "off", label: "Off", hint: "No reasoning (0 tokens)" },
+  { id: "low", label: "Low", hint: "1,024 token budget" },
+  { id: "medium", label: "Medium", hint: "4,096 token budget" },
+  { id: "high", label: "High", hint: "8,192 token budget" },
+  { id: "xhigh", label: "Extra high", hint: "16,384 token budget" },
+  { id: "max", label: "Max", hint: "32,768 token budget" },
 ];
 
 export interface ThinkingPickerProps {
@@ -100,14 +99,13 @@ export function ThinkingPicker({ level, disabled = false, onChange }: ThinkingPi
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`思考强度：${currentOption.label}`}
-        title={`思考强度：${currentOption.label}`}
+        aria-label={`Thinking: ${currentOption.label}`}
+        title={`Thinking: ${currentOption.label}`}
         onClick={() => {
           if (!disabled) setOpen((prev) => !prev);
         }}
         onKeyDown={onButtonKeyDown}
       >
-        <Glyph name="think" />
         <span className={styles.triggerLabel}>{currentOption.label}</span>
       </button>
 
@@ -119,7 +117,7 @@ export function ThinkingPicker({ level, disabled = false, onChange }: ThinkingPi
           className={styles.menu}
           onKeyDown={onMenuKeyDown}
         >
-          <div className={styles.header}>思考强度 (Thinking)</div>
+          <div className={styles.header}>Thinking</div>
           <div className={styles.viewport}>
             {THINKING_OPTIONS.map((opt, idx) => {
               const active = opt.id === level;

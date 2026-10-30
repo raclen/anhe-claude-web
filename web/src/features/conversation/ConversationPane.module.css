@@ -190,7 +190,16 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 0 16px;
-  max-height: 40vh;
+  /* 与会话列（MessageList / Composer 的 780px）对齐：这几张卡属于消息流，
+     宽度溢出会让权限询问卡看起来像浮在外面的弹窗。
+     border-box 不能省：默认 content-box 下 max-width 不含 padding，48px 会额外
+     撑出去，卡片反而比消息列还宽。 */
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 0 24px;
+  /* 40vh 在 800px 高的窗口里只剩 320px，会把卡片 footer 的按钮挤到卡外。 */
+  max-height: min(50vh, 420px);
   overflow-y: auto;
 }

@@ -267,10 +267,8 @@
   padding: 2px 8px 6px;
 }
 
-.toolbarHint {
+.spacer {
   flex: 1;
-  font-size: 11.5px;
-  color: var(--dsw-alias-label-tertiary);
 }
 
 /* The hero's send disc is the same dsh `.uV2eYG_primary` the conversation
